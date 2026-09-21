@@ -64,8 +64,34 @@ cmake --preset asan  && cmake --build --preset asan  && ctest --preset asan    #
   code: plain language, concrete examples, the *why* behind each decision.
 - Commit messages: imperative summary line, body explaining why. No schedule or week labels
   anywhere in the repo, in commits, or in PRs.
-- **Never merge your own PR.** The owner approves merges (the `/autopilot` orchestrator merges
-  after his approval; see `.claude/skills/autopilot/SKILL.md`).
+- **Never merge your own PR.** The `/autopilot` orchestrator merges, following the rules in the
+  Autopilot section below.
 - **Never** install software, run `scripts/bench.py`, or change a `DECIDED` entry without the
   owner. If an issue needs any of that, finish everything else, push, and say exactly what's
   needed and why.
+
+## Autopilot
+
+Configuration and project rules for the `/autopilot` skill (installed globally from
+github.com/aadityad12/claude-skills). Subagents follow everything above; the orchestrator also
+follows these.
+
+- max-parallel: 3
+- owner-label: needs-owner
+- careful-label: hard
+- skip-labels: stretch, tracking
+- merge-method: squash
+- worker-model: sonnet
+- careful-model: opus
+- **Benchmarks are an exclusive task.** Issues whose steps say "Measure (ask owner)" or run
+  `scripts/bench.py`: the subagent implements everything else and opens the PR; the measurement
+  waits for the owner. Ask him to plug the Mac in, turn Low Power Mode off, close other apps, and
+  not use the machine until you report back (notes D5), with a time estimate. When he says "go",
+  stop all subagents, run `scripts/bench.py` on the PR branch in a clean worktree, rerun anything
+  flagged noisy, run `scripts/ladder.py`, commit the results to the same PR, and tell him the
+  Mac is free again.
+- `needs-owner` issues that are only benchmark runs (e.g. recording a ladder row) need no
+  subagent: they are exclusive tasks from the start.
+- The owner learns the codebase from each PR's **How it works** and **Be ready to answer**
+  sections. In the stop report, point him at those when asking for a review.
+
