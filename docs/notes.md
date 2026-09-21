@@ -322,10 +322,20 @@ and identical exit code for every program. Each rule below gets at least one con
 |---|---|
 | `nil`, `true`, `false` | `nil`, `true`, `false` |
 | int | decimal, e.g. `-42` |
-| float | shortest form that round-trips (`std::to_chars`); if it looks like an integer, append `.0` (`3.0`); `nan`, `inf`, `-inf` |
+| float | see the float algorithm below (`3.0`, `0.1`, `1e+20`, `-0.0`, `nan`, `inf`, `-inf`) |
 | string | raw contents, no quotes |
 | function | `<fn name>`; native functions `<native fn>` |
-| array | `[1, 2.5, hi]`: elements printed by these same rules, `, ` separated |
+| array | `[1, 2.5, hi]`: elements printed by these same rules, `, ` separated, `[]` when empty. An array that contains itself (directly or indirectly) prints the inner occurrence as `[...]` |
+
+**Float algorithm** (one implementation in `src/runtime/`, so every engine and platform matches):
+1. Any NaN prints `nan` (never `-nan`). `+inf` prints `inf`, `-inf` prints `-inf`.
+2. Otherwise, for precision p = 1, 2, ..., 17: format with `snprintf("%.*g", p, x)`, parse
+   back with `strtod`; stop at the first p that gives back exactly `x`.
+3. If the result contains none of `.`, `e`, append `.0`. So `3.0`, `-0.0`, `0.1`, `1e+20`,
+   `1.5e-07`.
+
+(`std::to_chars` was rejected: its shortest form differs in format from `%g`, and older Apple
+libc++ gates it by OS version.)
 
 ### 2.4 Errors and exits
 
@@ -345,6 +355,47 @@ and identical exit code for every program. Each rule below gets at least one con
   instruction-to-bytecode map from D3 provides it).
 - Output must never depend on when the GC runs.
 - Conformance tests never print `clock()` results.
+
+### 2.5 Runtime error messages (complete list)
+
+Every runtime error any engine can raise, with its exact message. Adding a new runtime error
+means adding it here first.
+
+| Situation | Message |
+|---|---|
+| `+` with operands that aren't two numbers or two strings | `operands must be two numbers or two strings` |
+| `- * /` or `< <= > >=` with a non-number operand | `operands must be numbers` |
+| `%` with a non-int operand | `operands of '%' must be ints` |
+| unary `-` on a non-number | `operand must be a number` |
+| int `/` or `%` by zero | `division by zero` |
+| reading or assigning an undefined global | `undefined variable 'NAME'` |
+| calling something that isn't a function | `can only call functions` |
+| wrong number of arguments (Rung or native function) | `expected A arguments but got B` |
+| indexing (`a[i]` or `a[i] = v`) something that isn't an array | `can only index arrays` |
+| array index not an int | `array index must be an int` |
+| array index `< 0` or `>= len` | `array index out of range` |
+| `array(n, fill)` with `n` not an int or negative | `array size must be a non-negative int` |
+| `len(x)` with `x` not an array or string | `len expects an array or a string` |
+| the 10,001st nested call | `stack overflow` |
+
+- `len` works on strings too (length in bytes); `strcat` uses it.
+- The line reported is the line of the operator, call's `(`, or index's `[` that failed.
+
+### 2.6 Other rules every engine must share
+
+- A `for` loop's variable is one variable shared by all iterations (as in C and Lox), because
+  `for` is desugared to `while` in the parser. Closures created in the body all see its final
+  value.
+- **Nesting limit:** expressions and statements may nest at most **200** deep (parentheses,
+  operators, calls, blocks, `if`/`while` bodies all count). Deeper is the compile error
+  `nesting too deep`. This keeps every recursive C++ pass (parser, resolver, tree-walker,
+  compilers) safe from native stack overflow, and bounds the register VM's register count.
+- Compile error messages are listed in §2.7 by the parser issue; conformance tests pin each one.
+
+### 2.7 Compile error messages
+
+_(Filled in by the parser and resolver work. One row per message, with a conformance test
+for each.)_
 
 ---
 
