@@ -64,3 +64,8 @@ cmake --preset asan  && cmake --build --preset asan  && ctest --preset asan    #
   code: plain language, concrete examples, the *why* behind each decision.
 - Commit messages: imperative summary line, body explaining why. No schedule or week labels
   anywhere in the repo, in commits, or in PRs.
+- **Never merge your own PR.** The owner approves merges (the `/autopilot` orchestrator merges
+  after his approval; see `.claude/skills/autopilot/SKILL.md`).
+- **Never** install software, run `scripts/bench.py`, or change a `DECIDED` entry without the
+  owner. If an issue needs any of that, finish everything else, push, and say exactly what's
+  needed and why.
