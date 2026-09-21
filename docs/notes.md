@@ -42,7 +42,7 @@ still needs sign-off. Nothing `PROPOSED` should be built on without checking fir
 - Semantics: heap object, shared by reference (like Python lists), equality by identity,
   GC must trace elements. Index must be an int in `[0, len)`; anything else is a runtime error.
 - JIT: arrays are **not** in the initial JIT whitelist. Adding array get/set to the JIT (so
-  `sieve` can be JIT'd) is a week-10 stretch of the build, decided then.
+  `sieve` can be JIT'd) is a stretch goal, decided once the JIT works.
 - `strcat` benchmark: drop "and hash" (no string indexing exists). It still measures what it is
   for: allocation and GC pressure from building many strings.
 
@@ -55,7 +55,7 @@ still needs sign-off. Nothing `PROPOSED` should be built on without checking fir
 - Why it makes bail-out easy: JIT'd code reads and writes the same frame slots the register VM
   uses. When a type guard fails, nothing needs translating. The VM simply resumes at the
   matching bytecode instruction with the frame exactly as the JIT left it.
-- Knock-on 1: the JIT depends on the register VM (week 7 of the build). If the register VM slips, the JIT
+- Knock-on 1: the JIT depends on the register VM. If the register VM slips, the JIT
   slips. This matches the project's "cut from the bottom" rule.
 - Knock-on 2: the JIT only runs in the top ladder configuration (register VM + computed goto +
   NaN-boxing). Its type guards check NaN-box tag bits.
@@ -97,14 +97,14 @@ still needs sign-off. Nothing `PROPOSED` should be built on without checking fir
   2 efficiency cores). Never in CI, never in Docker. CI checks correctness only.
 - **`perf stat` in Docker won't work.** `perf` is Linux-only, and Docker on a Mac runs Linux
   inside a virtual machine that very likely doesn't expose the CPU's hardware counters. The
-  same applies to GitHub's CI machines. Spec week-5 exit criterion "perf stat branch-miss
+  same applies to GitHub's CI machines. The spec's exit criterion "perf stat branch-miss
   comparison captured in Docker" is replaced by:
   1. **Our own counters:** a debug-build flag that counts instructions dispatched, calls, and
      allocations inside the VM. Exact and identical on every platform. This is also the number
      spec §5.5 wants for the register VM ("instruction count should drop sharply").
   2. **Apple's CPU counters (optional):** Instruments' CPU Counters template via `xctrace`.
-     Requires full Xcode. Only the Command Line Tools are installed right now. Try it in
-     week 3 of the build. If it gives branch misses, use it; if not, drop it.
+     Requires full Xcode. Only the Command Line Tools are installed right now. Try it when
+     the benchmark harness exists. If it gives branch misses, use it; if not, drop it.
   3. **Real Linux hardware (optional):** only if a lab machine or similar is easily
      available. Not required.
 - **Per-iteration timing (p99):** timing happens outside the hot code. A normal
@@ -140,9 +140,9 @@ still needs sign-off. Nothing `PROPOSED` should be built on without checking fir
 
 ### D7. `fib` is not guaranteed to be JIT'd. `DECIDED` (2026-09-20)
 
-- Spec week 9 says "JIT covers `fib`", but under the whitelist it can't: `fib` calls itself
+- The spec says "JIT covers `fib`", but under the whitelist it can't: `fib` calls itself
   through a global variable lookup plus a function call, and both are excluded.
-- Plan: the JIT row shows `fib` as "not JIT'd", labelled honestly. If weeks 9-10 of the build go well, add a
+- Plan: the JIT row shows `fib` as "not JIT'd", labelled honestly. If the JIT lands with time to spare, add a
   special case for **direct self-recursion**: the JIT emits a direct call to the function's own
   machine code, guarded by a cheap check that the global still points to the same function
   (bail out if it was reassigned).
@@ -154,7 +154,7 @@ still needs sign-off. Nothing `PROPOSED` should be built on without checking fir
   measurement). If the pause is too small to see, "background compilation removes the p99
   spike" cannot be shown, and by the honesty rules it must not be claimed.
 - Order of work:
-  1. Week 9 of the build: log how long each synchronous compile takes, and which iteration it landed in.
+  1. When the JIT first works: log how long each synchronous compile takes, and which iteration it landed in.
   2. Only then build the background thread, and design the measurement so a real pause is
      visible: short iterations, per-iteration timing, and a plainly labelled warm-up benchmark
      with many distinct hot functions (a normal and legitimate JIT warm-up test).
@@ -190,6 +190,94 @@ still needs sign-off. Nothing `PROPOSED` should be built on without checking fir
 - A lexer error stops at the first problem: `[line N] compile error: <message>`, exit 65.
 - CLI exit codes follow `sysexits.h`: 64 bad usage, 65 compile error, 66 can't read input,
   70 runtime error.
+
+### D10. One shared runtime for every engine. `DECIDED` (2026-09-20)
+
+- `src/runtime/` holds everything about values that is not engine-specific: the `Value` type,
+  heap objects, the garbage collector, string interning, and an **operations module**
+  implementing every rule in §2 (arithmetic, comparison, equality, truthiness, printing, and
+  the exact runtime error messages). Engines call these; they never reimplement them. That
+  makes engines agree by construction. The only exception is the JIT, which inlines integer
+  fast paths and calls the same helpers for everything else.
+- **Integer math never uses signed overflow** (undefined behaviour in C++). Wrapping ops compute
+  in `uint32_t` and convert back. UBSan in CI enforces this.
+- **`Value`** (`src/runtime/value.h`): tagged struct today (`nil`, `bool`, `int32_t`,
+  `double`, `Obj*`), behind the D4 interface (`is_int`, `as_int`, `make_int`, ...). NaN-boxing
+  later swaps the implementation, not the interface.
+- **Objects:** every heap object starts with a header `{ObjKind kind; bool marked; Obj* next;}`
+  and lives on one intrusive list owned by `Heap`. Kinds: `String` (immutable, interned, hash
+  cached), `Array`, `Native`, `TreeFunction` + `Environment` (tree-walker only), `Function`
+  (bytecode prototype), `Closure`, `Upvalue` (VMs only).
+- **GC:** precise, stop-the-world mark-sweep. Checked on every allocation: collect when
+  `bytes_allocated > next_gc`; afterwards `next_gc = max(1 MiB, 2 × live bytes)`.
+  - Roots: each engine registers a root-marking callback with the heap (its stack, frames,
+    globals, environments). Values held only in C++ local variables are protected with an RAII
+    `TempRoot` guard that pushes onto a heap-owned temp-root stack.
+  - The intern table is weak: sweeping removes unmarked strings from it before freeing them.
+  - `--gc-stress` collects on **every** allocation. CI runs the conformance suite with it, which
+    is how missing roots get caught.
+  - `--stats` prints to stderr: objects allocated, bytes allocated, collections, peak heap bytes.
+- **Runtime errors:** `RuntimeError{line, message}`, formatted in `diagnostic.{h,cpp}` next to
+  `CompileError` as `[line N] runtime error: <message>`.
+
+### D11. A shared resolver pass after parsing. `DECIDED` (2026-09-20)
+
+- Runs once, before any engine, and does two jobs.
+- **Static errors**, reported as compile errors identically for every engine:
+  - `return` outside a function: `can't return from top-level code`
+  - redeclaring a local in the same scope: `variable 'x' is already declared in this scope`
+    (globals may be redeclared)
+  - reading a local in its own initializer (`let a = a;` inside a block):
+    `can't read local variable 'a' in its own initializer`
+  - more than 255 parameters, arguments, locals in one function, or captured variables in one
+    function: `too many parameters` / `too many arguments` / `too many local variables` /
+    `too many captured variables`. The bytecode uses one-byte operands for these, and every
+    engine must reject exactly the same programs.
+- **Binding annotations:** every variable use is marked either global, or local at N scopes up.
+  The tree-walker follows those hops through its chained hash maps. It stays deliberately
+  unoptimised (still a hash lookup per access), but it is now correct.
+- Why this is needed: with plain dynamic lookup through the environment chain, this program
+  prints `global` then `block` in a tree-walker but `global` twice in a VM, so the engines
+  would disagree:
+  ```
+  let a = "global";
+  { fn show() { print a; } show(); let a = "block"; show(); }
+  ```
+- No engine may have a limit the others don't have (e.g. bytecode jump offsets must be wide
+  enough for any function, not 16 bits).
+
+### D12. Command line and host interface. `DECIDED` (2026-09-20)
+
+```
+rung [--engine=tree|stack|register|jit] [--gc-stress] [--stats]
+     [--dump-tokens | --dump-ast | --dump-bytecode]
+     [--bench=N --bench-out=FILE] file.rg
+```
+- Default engine is `tree` until faster engines exist; revisit at the end.
+- Every engine implements one C++ interface (`src/engine.h`): run a program, and call a global
+  zero-argument function by name from C++ and get its result.
+- **Bench mode** (`--bench=N`): run the program's top level (defines functions, prints
+  nothing), then call the global function `run` N times, timing each call in C++ with
+  `std::chrono::steady_clock`. Write JSON to `--bench-out`:
+  `{"engine": ..., "iterations_ns": [...], "result": "<printed form of the last return value>"}`.
+  `bench.py` checks that `result` is identical across engines. On macOS, bench mode sets the
+  thread QoS to `QOS_CLASS_USER_INTERACTIVE` (D5).
+- Engines run on a dedicated thread with a 512 MiB stack, so the tree-walker (which uses C++
+  recursion) reaches the 10,000-frame limit without crashing, even under ASan.
+
+### D13. Conformance test format. `DECIDED` (2026-09-20)
+
+- Replaces spec §8's paired `.expected` files: expectations sit in comments next to the code.
+- Tests live in `tests/conformance/<topic>/<name>.rg`.
+  - `// expect: TEXT` is one line of stdout. All `expect:` lines, in file order, must equal
+    stdout exactly.
+  - `// expect runtime error: MSG`: stderr's first line must be
+    `[line L] runtime error: MSG`, where L is the line the comment is on, and the exit code 70.
+  - `// expect compile error: MSG`: same shape, `compile error`, exit code 65.
+  - No annotation of either error kind means exit code 0 and empty stderr.
+- `tests/run_conformance.py --rung PATH --engine E [--gc-stress] [FILTER]` runs every test,
+  prints a per-failure diff, and exits non-zero on any failure. CMake registers it as a ctest
+  test once per engine that exists.
 
 ---
 
@@ -267,7 +355,7 @@ and identical exit code for every program. Each rule below gets at least one con
 | 1 | Value representation before NaN-boxing | Tagged struct (spec recommendation). Behind the value interface in D4. `DECIDED` |
 | 2 | Integer overflow | 32-bit wraparound (D1). `DECIDED` |
 | 3 | String interning | Intern all strings (spec recommendation). `DECIDED` |
-| 4 | Benchmark sizes | Tree-walker takes roughly 2-10 s per benchmark; sized in week 3 of the build, respecting 32-bit ints. Open |
+| 4 | Benchmark sizes | Tree-walker takes roughly 2-10 s per benchmark; sized when the benchmarks are written, respecting 32-bit ints. Open |
 | 5 | Name | Rung, `.rg` files. Binary is `rung`, never `rg` (that's ripgrep). `DECIDED` |
 
 ---
