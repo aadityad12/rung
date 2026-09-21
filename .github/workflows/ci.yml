@@ -19,7 +19,7 @@ jobs:
       matrix:
         preset: [debug, release, asan]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Ninja
         run: command -v ninja || brew install ninja
       - run: cmake --preset ${{ matrix.preset }}
@@ -33,7 +33,7 @@ jobs:
       matrix:
         preset: [debug, release, asan]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install toolchain
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang cmake ninja-build
       - run: cmake --preset ${{ matrix.preset }}
@@ -43,6 +43,6 @@ jobs:
   linux-x86_64-docker:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: docker build -t rung .
       - run: docker run --rm rung
