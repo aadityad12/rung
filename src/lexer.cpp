@@ -1,7 +1,9 @@
 #include "lexer.h"
 
+#include <cerrno>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <system_error>
 
@@ -152,11 +154,15 @@ private:
         if (peek() == '.' && is_digit(peek_next())) {
             ++current_;  // the '.'
             while (is_digit(peek())) ++current_;
-            std::string_view text = source_.substr(start_, current_ - start_);
-            double value = 0.0;
-            auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-            if (ec != std::errc() || end != text.data() + text.size()) {
-                fail(start_line_, "invalid float literal '" + std::string(text) + "'");
+            // strtod, not std::from_chars: older Apple libc++ (Xcode 16) lacks the
+            // floating-point overload. The text is plain digits and one '.', and Rung never
+            // calls setlocale, so strtod's locale sensitivity can't bite here.
+            std::string text(source_.substr(start_, current_ - start_));
+            char* end = nullptr;
+            errno = 0;
+            double value = std::strtod(text.c_str(), &end);
+            if (errno == ERANGE || end != text.c_str() + text.size()) {
+                fail(start_line_, "invalid float literal '" + text + "'");
                 return;
             }
             add(TokenKind::Float).float_value = value;
