@@ -19,8 +19,6 @@ namespace rung {
 
 namespace {
 
-constexpr int kMaxSlot = 255;  // a one-byte operand; slot 0 is the callee, so 255 locals fit
-
 class Compiler {
 public:
     explicit Compiler(Heap& heap) : heap_(heap) {}
@@ -137,7 +135,8 @@ private:
 
     void add_local(std::string_view name) {
         // The resolver enforces at most 255 locals per function (notes D11); slot 0 is extra.
-        assert(current_->locals.size() <= static_cast<std::size_t>(kMaxSlot));
+        // Slots 0..255 fit a one-byte operand, so the list holds at most 256 entries.
+        assert(current_->locals.size() <= 255);
         current_->locals.push_back(Local{name, current_->scope_depth, false});
     }
 
