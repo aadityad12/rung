@@ -4,7 +4,9 @@
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <variant>
+#include <vector>
 
 namespace rung {
 namespace {
@@ -87,6 +89,30 @@ std::string join(std::string head, const std::vector<ExprPtr>& items) {
     return head + ")";
 }
 
+// A node that starts with a child expression (a binary operator's left side, a call's callee, an
+// indexed object) dumps as head + <that child> + tail. A chain like `1 + 1 + ... + 1` or
+// `f()()()` nests these to any length: the nesting limit (notes §2.6) does not bound it, so
+// dump_expr walks the chain with a loop instead of recursing, and appends heads then tails.
+std::string chain_head(const Binary& n) { return std::string("(") + binary_name(n.op) + " "; }
+std::string chain_head(const Logical& n) {
+    return std::string("(") + (n.op == LogicalOp::And ? "and" : "or") + " ";
+}
+std::string chain_head(const Call&) { return "(call "; }
+std::string chain_head(const Index&) { return "(index "; }
+std::string chain_head(const IndexAssign&) { return "(set-index "; }
+
+std::string chain_tail(const Binary& n) { return " " + dump_expr(*n.right) + ")"; }
+std::string chain_tail(const Logical& n) { return " " + dump_expr(*n.right) + ")"; }
+std::string chain_tail(const Call& n) {
+    std::string out;
+    for (const ExprPtr& arg : n.args) out += " " + dump_expr(*arg);
+    return out + ")";
+}
+std::string chain_tail(const Index& n) { return " " + dump_expr(*n.index) + ")"; }
+std::string chain_tail(const IndexAssign& n) {
+    return " " + dump_expr(*n.index) + " " + dump_expr(*n.value) + ")";
+}
+
 struct ExprDumper {
     std::string operator()(const Literal& n) const {
         struct V {
@@ -106,24 +132,24 @@ struct ExprDumper {
         return std::string("(") + (n.op == UnaryOp::Not ? "!" : "-") + " " +
                dump_expr(*n.operand) + ")";
     }
+    std::string operator()(const ArrayLiteral& n) const { return join("(array", n.elements); }
+
+    // Nodes whose dump starts with a child (see leftmost_child). dump_expr handles these through
+    // head/tail; these overloads are the same text for a node dumped on its own.
     std::string operator()(const Binary& n) const {
-        return std::string("(") + binary_name(n.op) + " " + dump_expr(*n.left) + " " +
-               dump_expr(*n.right) + ")";
+        return chain_head(n) + dump_expr(*n.left) + chain_tail(n);
     }
     std::string operator()(const Logical& n) const {
-        return std::string("(") + (n.op == LogicalOp::And ? "and" : "or") + " " +
-               dump_expr(*n.left) + " " + dump_expr(*n.right) + ")";
+        return chain_head(n) + dump_expr(*n.left) + chain_tail(n);
     }
     std::string operator()(const Call& n) const {
-        return join("(call " + dump_expr(*n.callee), n.args);
+        return chain_head(n) + dump_expr(*n.callee) + chain_tail(n);
     }
-    std::string operator()(const ArrayLiteral& n) const { return join("(array", n.elements); }
     std::string operator()(const Index& n) const {
-        return "(index " + dump_expr(*n.object) + " " + dump_expr(*n.index) + ")";
+        return chain_head(n) + dump_expr(*n.object) + chain_tail(n);
     }
     std::string operator()(const IndexAssign& n) const {
-        return "(set-index " + dump_expr(*n.object) + " " + dump_expr(*n.index) + " " +
-               dump_expr(*n.value) + ")";
+        return chain_head(n) + dump_expr(*n.object) + chain_tail(n);
     }
 };
 
@@ -163,7 +189,55 @@ struct StmtDumper {
     }
 };
 
-std::string dump_expr(const Expr& expr) { return std::visit(ExprDumper{}, expr.node); }
+// The child a node's dump starts with, or null.
+const Expr* leftmost_child(const Expr& expr) {
+    return std::visit(
+        [](const auto& n) -> const Expr* {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Binary> || std::is_same_v<T, Logical>) {
+                return n.left.get();
+            } else if constexpr (std::is_same_v<T, Call>) {
+                return n.callee.get();
+            } else if constexpr (std::is_same_v<T, Index> || std::is_same_v<T, IndexAssign>) {
+                return n.object.get();
+            } else {
+                return nullptr;
+            }
+        },
+        expr.node);
+}
+
+std::string head_of(const Expr& expr) {
+    return std::visit(
+        [](const auto& n) -> std::string {
+            if constexpr (requires { chain_head(n); }) return chain_head(n);
+            return {};  // not a chain node; never on the spine
+        },
+        expr.node);
+}
+
+std::string tail_of(const Expr& expr) {
+    return std::visit(
+        [](const auto& n) -> std::string {
+            if constexpr (requires { chain_tail(n); }) return chain_tail(n);
+            return {};
+        },
+        expr.node);
+}
+
+std::string dump_expr(const Expr& expr) {
+    std::vector<const Expr*> spine;  // outermost first
+    const Expr* innermost = &expr;
+    while (const Expr* child = leftmost_child(*innermost)) {
+        spine.push_back(innermost);
+        innermost = child;
+    }
+    std::string out;
+    for (const Expr* node : spine) out += head_of(*node);
+    out += std::visit(ExprDumper{}, innermost->node);
+    for (auto it = spine.rbegin(); it != spine.rend(); ++it) out += tail_of(**it);
+    return out;
+}
 std::string dump_stmt(const Stmt& stmt) { return std::visit(StmtDumper{}, stmt.node); }
 
 }  // namespace
