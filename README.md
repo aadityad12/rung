@@ -39,7 +39,7 @@ print, error messages and exit codes) are in [`docs/notes.md`](docs/notes.md), �
 Needs CMake 3.25+, Ninja, and Clang with C++20.
 
 ```sh
-cmake --preset debug          # also: release, asan (Address + UB sanitizers), tsan
+cmake --preset debug          # also: release, asan (Address + UB sanitizers), tsan, fuzz
 cmake --build --preset debug
 ctest --preset debug
 ./build/debug/rung --dump-tokens examples/hello.rg
@@ -51,24 +51,55 @@ CI builds and tests on macOS ARM64, Linux ARM64, and Linux x86-64 (inside the `D
 
 ## Testing
 
-Two kinds of tests:
+Five layers, each catching something the others cannot:
 
-- **Unit tests** (`tests/unit/`, doctest) check one component at a time: lexer, parser, resolver,
-  runtime, ARM64 encoder. `ctest --preset debug` runs them.
-- **The conformance suite** (`tests/conformance/`) is a directory of small Rung programs that
-  state their expected output, and their expected error message and line, in comments next to
-  the code. It is the executable form of the semantics contract in
-  [`docs/notes.md`](docs/notes.md) §2. `tests/run_conformance.py` runs one engine over every
-  program and compares stdout, the exit code and the first line of stderr exactly:
+1. **Conformance tests** (`tests/conformance/<topic>/<name>.rg`). A Rung program with its
+   expected output written in `// expect:` comments beside the code (format in
+   [notes D13](docs/notes.md)). The runner executes every program on **every engine** and
+   fails on any difference, so an engine that disagrees with the others, or with the
+   [semantics contract](docs/notes.md), cannot pass. Run it with
+   `python3 tests/run_conformance.py --rung build/debug/rung --engine tree [--gc-stress]
+   [FILTER...]`; the format and how to add a test are in
+   [`tests/conformance/README.md`](tests/conformance/README.md).
+2. **Unit tests** (`tests/unit/`, [doctest](https://github.com/doctest/doctest)). Each C++
+   module on its own: the lexer, parser, resolver, runtime and GC, and the ARM64 encoder
+   (checked byte for byte against LLVM). `ctest --preset debug` runs them.
+3. **Sanitizers.** The `asan` preset builds everything with AddressSanitizer and
+   UndefinedBehaviorSanitizer, and `tsan` with ThreadSanitizer (for the background JIT thread).
+   Warnings are errors. Run `asan` before every PR.
+4. **Fuzzing.** A coverage-guided libFuzzer target feeds random bytes to the lexer, parser and
+   resolver, and must never crash, hang, leak or trigger a sanitizer (details below). It stops
+   before execution, because a valid Rung program may loop forever.
+5. **Three-platform CI.** Every push builds and tests on macOS ARM64, Linux ARM64 and Linux
+   x86-64 (inside the `Dockerfile`, with the JIT disabled), plus the fuzz job below.
 
+### Fuzzing
+
+`fuzz/fuzz_frontend.cpp` is the target; `fuzz/rung.dict` lists Rung's keywords and operators
+for the mutator; `fuzz/run_fuzz.sh` runs it for a fixed time. The seed corpus is every
+`tests/conformance/**/*.rg` and `examples/*.rg`. Inputs are capped at 4096 bytes because very
+long flat expression chains (`1+1+...+1`, thousands of terms) overflow the native stack in the
+resolver; that open problem, and the options for it, are in [notes Q1](docs/notes.md) (§4).
+
+**libFuzzer needs a clang that ships its runtime, and Apple clang does not.**
+
+- **Linux** (this is what CI uses): `sudo apt-get install clang cmake ninja-build`, then
   ```sh
-  python3 tests/run_conformance.py --rung build/debug/rung --engine tree [--gc-stress] [FILTER...]
+  cmake --preset fuzz && cmake --build --preset fuzz
+  fuzz/run_fuzz.sh build/fuzz/rung_fuzz_frontend 60
   ```
+- **macOS**: install Homebrew LLVM (`brew install llvm`) and point CMake at it:
+  ```sh
+  cmake --preset fuzz -DCMAKE_CXX_COMPILER="$(brew --prefix llvm)/bin/clang++"
+  cmake --build --preset fuzz
+  fuzz/run_fuzz.sh build/fuzz/rung_fuzz_frontend 60
+  ```
+  Configuring `fuzz` with Apple clang stops with an error that says so.
 
-  Every engine has to pass every test, so a ladder rung that changes any observable behaviour
-  fails here. See [`tests/conformance/README.md`](tests/conformance/README.md) for the format
-  and how to add a test. No engine executes programs yet, so the suite is not registered with
-  `ctest` yet.
+`ctest --preset fuzz` replays the seed files once (no fuzzing) as a quick check. A failing run
+writes the offending input to `fuzz-artifacts/`; CI uploads that directory as the `fuzz-crash`
+artifact. Reproduce with `build/fuzz/rung_fuzz_frontend fuzz-artifacts/crash-<hash>`. Every bug
+the fuzzer finds gets fixed and its input added as a unit or conformance test.
 
 ## Design notes
 

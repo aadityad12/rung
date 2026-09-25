@@ -33,6 +33,15 @@
       }
     },
     {
+      "name": "fuzz",
+      "displayName": "libFuzzer front-end target (needs clang with libFuzzer, not Apple clang)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "RUNG_FUZZ": "ON"
+      }
+    },
+    {
       "name": "tsan",
       "displayName": "Debug + ThreadSanitizer",
       "inherits": "base",
@@ -46,7 +55,8 @@
     { "name": "debug", "configurePreset": "debug" },
     { "name": "release", "configurePreset": "release" },
     { "name": "asan", "configurePreset": "asan" },
-    { "name": "tsan", "configurePreset": "tsan" }
+    { "name": "tsan", "configurePreset": "tsan" },
+    { "name": "fuzz", "configurePreset": "fuzz" }
   ],
   "testPresets": [
     {
@@ -62,6 +72,7 @@
       "configurePreset": "asan",
       "environment": { "UBSAN_OPTIONS": "print_stacktrace=1" }
     },
-    { "name": "tsan", "inherits": "base", "configurePreset": "tsan" }
+    { "name": "tsan", "inherits": "base", "configurePreset": "tsan" },
+    { "name": "fuzz", "inherits": "base", "configurePreset": "fuzz" }
   ]
 }
