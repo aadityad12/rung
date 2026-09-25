@@ -496,7 +496,29 @@ Rules behind the table, which every engine relies on:
 
 ## 4. Open questions
 
-_(none right now)_
+### Q1. Long flat chains overflow the native stack (found by the fuzzer, issue #12). `OPEN`
+
+The nesting limit (§2.6) bounds *nesting*, but `1 + 1 + ... + 1`, `a and a and ... and a`,
+`f(1)(1)...(1)` and `a[0][0]...[0]` do not nest: they are left-associative chains, so the
+parser builds them in a loop and no depth counter moves. The resulting AST is still a left spine
+as deep as the chain is long, and every recursive pass follows that spine. Feeding a chain of
+about 8,000 terms (16 KB of source) to the resolver overflows the 8 MiB main-thread stack in the
+fuzz build (AddressSanitizer reports `stack-overflow` in `Resolver::expr_`); 6,000 terms passed.
+The AST destructor and `dump_ast` recurse the same way, and so will the tree-walker and the
+compilers (the tree-walker runs on the 512 MiB stack from D12, but the front end runs on the
+main thread). §2.6's claim that the limit keeps *every* recursive pass safe is therefore not
+true for flat chains.
+
+Options, none chosen (each changes a documented rule, so it is the owner's call):
+1. Count each link of a left-associative chain toward the nesting limit. Simple, but a
+   200-term `1 + 1 + ...` becomes a compile error, and the parser test that parses a 5000-term
+   flat chain (and the "long flat chains do not nest" note in §2.7) must change.
+2. Add a separate limit on the length of one chain (a new compile error message).
+3. Make the resolver, the AST destructor and `dump_ast` iterative along the left spine, and
+   require the same of every engine. No language change, more code in every pass.
+
+The fuzz target caps inputs at 4096 bytes (at most about 2,000 chain terms, well under the
+overflow point) so CI stays meaningful until this is decided. Remove the cap when it is.
 
 ---
 
