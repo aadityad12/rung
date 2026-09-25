@@ -73,7 +73,7 @@ Rules that keep tests honest:
 | Directory | Covers |
 |---|---|
 | `lexing/` | every lexer error, number and string forms, comments, keywords vs identifiers |
-| `parsing/` | every parser error message (§2.7), precedence and associativity, `-2147483648`, the nesting limit |
+| `parsing/` | every parser error message (§2.7), precedence and associativity, `-2147483648`, the nesting limit and the 1000-link chain limit |
 | `resolving/` | every resolver error, shadowing, the D11 example, the 255/256 limits |
 | `numbers/` | every row of §2.1: wraparound, division, modulo, float mixing, IEEE cases |
 | `types/` | every row of §2.2: truthiness, `and`/`or`, string and identity equality |
