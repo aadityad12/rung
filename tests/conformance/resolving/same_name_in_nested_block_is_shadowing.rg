@@ -1,0 +1,8 @@
+{
+  let a = 1;
+  {
+    let a = 2;
+    print a; // expect: 2
+  }
+  print a; // expect: 1
+}

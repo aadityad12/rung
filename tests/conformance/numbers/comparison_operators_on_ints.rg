@@ -1,0 +1,9 @@
+print 1 < 2; // expect: true
+print 2 < 2; // expect: false
+print 2 <= 2; // expect: true
+print 3 <= 2; // expect: false
+print 3 > 2; // expect: true
+print 2 > 2; // expect: false
+print 2 >= 2; // expect: true
+print 1 >= 2; // expect: false
+print -2147483648 < 2147483647; // expect: true

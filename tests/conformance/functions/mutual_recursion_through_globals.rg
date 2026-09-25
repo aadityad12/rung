@@ -1,0 +1,11 @@
+fn is_even(n) {
+  if (n == 0) return true;
+  return is_odd(n - 1);
+}
+fn is_odd(n) {
+  if (n == 0) return false;
+  return is_even(n - 1);
+}
+print is_even(10); // expect: true
+print is_odd(7); // expect: true
+print is_even(7); // expect: false
