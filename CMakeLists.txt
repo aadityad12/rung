@@ -29,9 +29,11 @@ add_library(rung_core STATIC
   src/jit/arm64_emitter.cpp
   src/lexer.cpp
   src/runtime/heap.cpp
+  src/runtime/natives.cpp
   src/runtime/object.cpp
   src/parser.cpp
   src/resolver.cpp
+  src/runtime/ops.cpp
   src/token.cpp
 )
 target_include_directories(rung_core PUBLIC src)
@@ -56,6 +58,7 @@ add_executable(rung_unit_tests
   tests/unit/runtime_heap_test.cpp
   tests/unit/parser_test.cpp
   tests/unit/resolver_test.cpp
+  tests/unit/runtime_ops_test.cpp
 )
 target_include_directories(rung_unit_tests SYSTEM PRIVATE third_party/doctest)
 if(RUNG_HAS_JIT_MEMORY)
