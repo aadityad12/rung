@@ -394,8 +394,42 @@ means adding it here first.
 
 ### 2.7 Compile error messages
 
-_(Filled in by the parser and resolver work. One row per message, with a conformance test
-for each.)_
+_(One row per message, with a test for each. Parser messages are below; the resolver adds its
+own rows. Lexer messages are described in D9 and tested in `tests/unit/lexer_test.cpp`.)_
+
+The reported line is the line of the offending token (the `Eof` token's line at end of input),
+except `invalid assignment target`, which reports the line of the `=`.
+
+| Situation | Message |
+|---|---|
+| a token that cannot start an expression | `expected expression` |
+| missing `)` closing a parenthesised expression | `expected ')' after expression` |
+| missing `)` closing a call's arguments | `expected ')' after arguments` |
+| missing `]` closing an index | `expected ']' after index` |
+| missing `]` closing an array literal | `expected ']' after array elements` |
+| expression statement without `;` | `expected ';' after expression` |
+| `print` without `;` | `expected ';' after value` |
+| `let` without `;` | `expected ';' after variable declaration` |
+| `return` without `;` | `expected ';' after return value` |
+| `let` not followed by a name | `expected variable name after 'let'` |
+| `fn` not followed by a name | `expected function name after 'fn'` |
+| function name not followed by `(` | `expected '(' after function name` |
+| a parameter that is not a name (including a trailing comma) | `expected parameter name` |
+| parameter list without `)` | `expected ')' after parameters` |
+| function header not followed by `{` | `expected '{' before function body` |
+| block without `}` | `expected '}' after block` |
+| `if` / `while` / `for` not followed by `(` | `expected '(' after 'if'` / `'while'` / `'for'` |
+| `if` / `while` condition without `)` | `expected ')' after condition` |
+| `for` without `;` after its condition | `expected ';' after loop condition` |
+| `for` without `)` after its clauses | `expected ')' after for clauses` |
+| `=` after something that is not a variable or an index | `invalid assignment target` |
+| `2147483648` anywhere except directly after unary `-` | `integer literal '2147483648' is too large for a 32-bit int` |
+| expressions or statements nested more than 200 deep | `nesting too deep` |
+
+Notes on the nesting count (§2.6): a level is added by `(`, `[` in an array literal, a call's
+argument list, an index, a unary operator, the right side of `=`, a `{ }` block, and the body of
+an `if` / `while` / `for`. A top-level statement or expression is level zero, and long flat
+chains such as `1 + 1 + ... + 1` do not nest.
 
 ---
 

@@ -5,8 +5,11 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
+#include "ast_dump.h"
 #include "lexer.h"
+#include "parser.h"
 
 namespace {
 
@@ -16,7 +19,7 @@ constexpr int kExitCompileError = 65;
 constexpr int kExitNoInput = 66;
 
 void print_usage() {
-    std::cerr << "usage: rung [--dump-tokens] <file.rg>\n";
+    std::cerr << "usage: rung [--dump-tokens] [--dump-ast] <file.rg>\n";
 }
 
 std::optional<std::string> read_file(const std::string& path) {
@@ -38,12 +41,15 @@ void dump_tokens(const std::vector<rung::Token>& tokens) {
 
 int main(int argc, char** argv) {
     bool want_tokens = false;
+    bool want_ast = false;
     const char* path = nullptr;
 
     for (int i = 1; i < argc; ++i) {
         std::string_view arg = argv[i];
         if (arg == "--dump-tokens") {
             want_tokens = true;
+        } else if (arg == "--dump-ast") {
+            want_ast = true;
         } else if (!arg.empty() && arg[0] == '-') {
             std::cerr << "rung: unknown option '" << arg << "'\n";
             print_usage();
@@ -66,17 +72,28 @@ int main(int argc, char** argv) {
         return kExitNoInput;
     }
 
-    rung::LexResult lexed = rung::lex(*source);
-    if (!lexed.ok()) {
-        std::cerr << rung::format_error(*lexed.error) << "\n";
+    if (want_tokens) {
+        rung::LexResult lexed = rung::lex(*source);
+        if (!lexed.ok()) {
+            std::cerr << rung::format_error(*lexed.error) << "\n";
+            return kExitCompileError;
+        }
+        dump_tokens(lexed.tokens);
+        if (!want_ast) return 0;
+    }
+
+    // Parsing (which lexes first) reports lexer and parser errors identically.
+    rung::ParseResult parsed = rung::parse(std::move(*source));
+    if (!parsed.ok()) {
+        std::cerr << rung::format_error(*parsed.error) << "\n";
         return kExitCompileError;
     }
 
-    if (want_tokens) {
-        dump_tokens(lexed.tokens);
+    if (want_ast) {
+        std::cout << rung::dump_ast(*parsed.program);
         return 0;
     }
 
-    std::cerr << "rung: no execution engine yet; try --dump-tokens\n";
+    std::cerr << "rung: no execution engine yet; try --dump-tokens or --dump-ast\n";
     return 1;
 }
