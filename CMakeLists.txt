@@ -9,9 +9,38 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(RUNG_WERROR "Treat compiler warnings as errors" ON)
 set(RUNG_SANITIZE "" CACHE STRING "Sanitizers to build with: empty, 'address,undefined', or 'thread'")
 
+option(RUNG_FUZZ "Build the libFuzzer front-end target (needs a clang with libFuzzer)" OFF)
+
+if(RUNG_FUZZ AND RUNG_SANITIZE)
+  message(FATAL_ERROR "RUNG_FUZZ already builds with address,undefined; leave RUNG_SANITIZE empty")
+endif()
+
 if(RUNG_SANITIZE)
   add_compile_options(-fsanitize=${RUNG_SANITIZE} -fno-sanitize-recover=all -fno-omit-frame-pointer)
   add_link_options(-fsanitize=${RUNG_SANITIZE})
+endif()
+
+if(RUNG_FUZZ)
+  # Apple's clang ships no libFuzzer runtime; fail here with the reason rather than at link time.
+  include(CheckCXXSourceCompiles)
+  set(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer")
+  check_cxx_source_compiles("
+    #include <cstddef>
+    #include <cstdint>
+    extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t*, size_t) { return 0; }" RUNG_HAS_LIBFUZZER)
+  unset(CMAKE_REQUIRED_FLAGS)
+  if(NOT RUNG_HAS_LIBFUZZER)
+    message(FATAL_ERROR
+      "RUNG_FUZZ needs a clang with the libFuzzer runtime. Apple clang has none: on macOS use "
+      "Homebrew LLVM (-DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++); on Linux install "
+      "clang's runtime package (libclang-rt-NN-dev, matching your clang).")
+  endif()
+  # Every library gets coverage instrumentation (fuzzer-no-link) so libFuzzer can see which
+  # branches an input reaches inside the lexer, parser and resolver. Only the fuzz target links
+  # libFuzzer's main().
+  add_compile_options(-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=all
+                      -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
 endif()
 
 # Warnings for Rung's own code only; third-party headers are included as SYSTEM.
@@ -81,3 +110,19 @@ if(RUNG_SANITIZE STREQUAL "thread")
   list(APPEND RUNG_UNIT_TEST_ARGS "--test-case-exclude=nesting limit")
 endif()
 add_test(NAME unit COMMAND rung_unit_tests ${RUNG_UNIT_TEST_ARGS})
+
+# Front-end fuzzer (issue #12). Run it with fuzz/run_fuzz.sh; see README, Testing.
+if(RUNG_FUZZ)
+  add_executable(rung_fuzz_frontend fuzz/fuzz_frontend.cpp)
+  target_link_libraries(rung_fuzz_frontend PRIVATE rung_core rung_warnings)
+  target_link_options(rung_fuzz_frontend PRIVATE -fsanitize=fuzzer)
+
+  # `-runs=0` replays each seed input once and exits: a quick "does every known input still pass"
+  # check under `ctest --preset fuzz`, without doing any fuzzing. libFuzzer reads a directory
+  # recursively when given as an argument, so the conformance tree can be passed as it is.
+  set(RUNG_FUZZ_SEEDS ${CMAKE_SOURCE_DIR}/examples)
+  if(EXISTS ${CMAKE_SOURCE_DIR}/tests/conformance)
+    list(APPEND RUNG_FUZZ_SEEDS ${CMAKE_SOURCE_DIR}/tests/conformance)
+  endif()
+  add_test(NAME fuzz_seed_replay COMMAND rung_fuzz_frontend -runs=0 ${RUNG_FUZZ_SEEDS})
+endif()
