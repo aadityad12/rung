@@ -34,13 +34,11 @@ done < <(find "$root/tests" "$root/examples" -name '*.rg' -type f -print0 2>/dev
 echo "fuzz: $count seed files, running for ${seconds}s"
 
 # -timeout: a single input taking longer than 10 s counts as a hang.
-# -max_len: keeps one execution fast, and keeps flat expression chains short enough not to hit
-# the known native-stack overflow in the recursive passes (docs/notes.md, open question Q1).
-# Lift the cap when that is resolved.
+# There is deliberately no -max_len: the chain limit (docs/notes.md §2.6) means a long flat
+# expression is a compile error rather than a stack overflow, so inputs need no size cap.
 "$fuzzer" \
     -max_total_time="$seconds" \
     -timeout=10 \
-    -max_len=4096 \
     -dict="$root/fuzz/rung.dict" \
     -artifact_prefix="$artifacts/" \
     "$work/corpus" "$work/seeds"

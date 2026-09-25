@@ -77,9 +77,10 @@ Five layers, each catching something the others cannot:
 
 `fuzz/fuzz_frontend.cpp` is the target; `fuzz/rung.dict` lists Rung's keywords and operators
 for the mutator; `fuzz/run_fuzz.sh` runs it for a fixed time. The seed corpus is every
-`tests/conformance/**/*.rg` and `examples/*.rg`. Inputs are capped at 4096 bytes because very
-long flat expression chains (`1+1+...+1`, thousands of terms) overflow the native stack in the
-resolver; that open problem, and the options for it, are in [notes Q1](docs/notes.md) (§4).
+`tests/conformance/**/*.rg` and `examples/*.rg`. Inputs have no size cap: an expression more than
+1000 links long (`1+1+...+1`, thousands of terms) is the compile error `expression chain too
+long`, so it cannot overflow the native stack (the rule and how it was chosen: notes §2.6 and
+[Q1](docs/notes.md)).
 
 **libFuzzer needs a clang that ships its runtime, and Apple clang does not.**
 

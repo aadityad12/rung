@@ -283,7 +283,107 @@ TEST_CASE("nesting limit") {
     // A very deep input must be an error, not a stack overflow.
     CHECK(error_of("print " + repeat("(", 100000) + "1;") ==
           "[line 1] compile error: nesting too deep");
-    // Long flat chains are not nesting.
-    CHECK(error_of("print 1" + repeat(" + 1", 5000) + ";") == "no error");
-    CHECK(error_of("f" + repeat("(1)", 5000) + ";") == "no error");
+    // Long flat chains are not nesting; they have their own limit (next test case).
+    CHECK(error_of("print 1" + repeat(" + 1", 1000) + ";") == "no error");
+    CHECK(error_of("f" + repeat("(1)", 1000) + ";") == "no error");
+}
+
+// notes §2.6: one expression may be at most 1000 links long. Every construct that makes a link is
+// checked at exactly 1000 (fine) and 1001 (error), because the parser builds a left-nested tree
+// for each of them without touching the nesting counter.
+TEST_CASE("chain limit") {
+    const std::string too_long = "[line 1] compile error: expression chain too long";
+
+    SUBCASE("every binary and logical operator") {
+        for (const char* op : {"+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "and",
+                               "or"}) {
+            const std::string link = std::string(" ") + op + " 1";
+            INFO(op);
+            CHECK(error_of("print 1" + repeat(link, 1000) + ";") == "no error");
+            CHECK(error_of("print 1" + repeat(link, 1001) + ";") == too_long);
+        }
+    }
+    SUBCASE("calls") {
+        CHECK(error_of("f" + repeat("(1)", 1000) + ";") == "no error");
+        CHECK(error_of("f" + repeat("(1)", 1001) + ";") == too_long);
+        CHECK(error_of("f" + repeat("()", 1001) + ";") == too_long);
+    }
+    SUBCASE("indexes") {
+        CHECK(error_of("a" + repeat("[0]", 1000) + ";") == "no error");
+        CHECK(error_of("a" + repeat("[0]", 1001) + ";") == too_long);
+    }
+    SUBCASE("calls and indexes mixed") {
+        CHECK(error_of("f" + repeat("(1)[0]", 500) + ";") == "no error");
+        CHECK(error_of("f" + repeat("(1)[0]", 500) + "(1);") == too_long);
+    }
+    SUBCASE("index assignment adds the assignment as a link") {
+        // `a[0]...[0] = v`: the IndexAssign replaces the last Index, so it adds nothing.
+        CHECK(error_of("a" + repeat("[0]", 1000) + " = 1;") == "no error");
+        CHECK(error_of("a" + repeat("[0]", 1001) + " = 1;") == too_long);
+        // But a value that is itself a chain of 1000 sits one link below the assignment.
+        CHECK(error_of("a[0] = 1" + repeat(" + 1", 999) + ";") == "no error");
+        CHECK(error_of("a[0] = 1" + repeat(" + 1", 1000) + ";") == too_long);
+        CHECK(error_of("a = 1" + repeat(" + 1", 999) + ";") == "no error");
+        CHECK(error_of("a = 1" + repeat(" + 1", 1000) + ";") == too_long);
+    }
+    SUBCASE("operators of different precedence share one chain") {
+        CHECK(error_of("print 1" + repeat(" * 1", 500) + repeat(" + 1", 500) + ";") ==
+              "no error");
+        CHECK(error_of("print 1" + repeat(" * 1", 500) + repeat(" + 1", 501) + ";") == too_long);
+        CHECK(error_of("print 1" + repeat(" * 1", 250) + repeat(" + 1", 250) +
+                       repeat(" < 1", 250) + repeat(" and 1", 250) + " or 1;") == too_long);
+    }
+    SUBCASE("unary operators and array literals count") {
+        CHECK(error_of("print " + repeat("-", 150) + "1" + repeat(" + 1", 850) + ";") ==
+              "no error");
+        CHECK(error_of("print " + repeat("-", 150) + "1" + repeat(" + 1", 851) + ";") == too_long);
+        CHECK(error_of("print [1" + repeat(" + 1", 999) + "];") == "no error");
+        CHECK(error_of("print [1" + repeat(" + 1", 1000) + "];") == too_long);
+    }
+    SUBCASE("parentheses do not reset the count") {
+        // Four groups of 250 links: nesting is 4 deep, but the chain is 1000 and then 1001 long.
+        std::string s = "1" + repeat(" + 1", 250);
+        for (int i = 0; i < 3; ++i) s = "(" + s + ")" + repeat(" + 1", 250);
+        CHECK(error_of("print " + s + ";") == "no error");
+        s = "(" + s + ") + 1";
+        CHECK(error_of("print " + s + ";") == too_long);
+        // The same with the group in the middle of a chain: the deepest path leaves the left
+        // spine at the group, so it is the links after the group plus the group's own length.
+        std::string r = "1" + repeat(" + 1", 250);
+        for (int i = 0; i < 3; ++i) r = "1 + (" + r + ")" + repeat(" + 1", 249);
+        CHECK(error_of("print " + r + ";") == "no error");
+        r = "1 + (" + r + ")";
+        CHECK(error_of("print " + r + ";") == too_long);
+    }
+    SUBCASE("arguments and indexes count as part of the chain that contains them") {
+        CHECK(error_of("f(1" + repeat(" + 1", 999) + ");") == "no error");
+        CHECK(error_of("f(1" + repeat(" + 1", 1000) + ");") == too_long);
+        CHECK(error_of("a[1" + repeat(" + 1", 999) + "];") == "no error");
+        CHECK(error_of("a[1" + repeat(" + 1", 1000) + "];") == too_long);
+    }
+    SUBCASE("chains in separate expressions are counted separately") {
+        const std::string chain = "print 1" + repeat(" + 1", 1000) + ";\n";
+        CHECK(error_of(repeat(chain, 3)) == "no error");
+        CHECK(error_of("{ " + chain + "}") == "no error");
+    }
+    SUBCASE("the error is on the line of the link that goes over") {
+        CHECK(error_of("print 1" + repeat(" + 1", 1000) + "\n + 1;") ==
+              "[line 2] compile error: expression chain too long");
+        CHECK(error_of("f" + repeat("(1)", 1000) + "\n(1);") ==
+              "[line 2] compile error: expression chain too long");
+        CHECK(error_of("a" + repeat("[0]", 1000) + "\n[0];") ==
+              "[line 2] compile error: expression chain too long");
+    }
+    SUBCASE("a very long chain is an error, not a stack overflow") {
+        CHECK(error_of("print 1" + repeat(" + 1", 20000) + ";") == too_long);
+        CHECK(error_of("f" + repeat("(1)", 20000) + ";") == too_long);
+        CHECK(error_of("a" + repeat("[0]", 20000) + ";") == too_long);
+        CHECK(error_of("print 1" + repeat(" and 1", 20000) + ";") == too_long);
+    }
+    SUBCASE("a legal chain parses, dumps and resolves") {
+        rung::ParseResult result = parse("print 1" + repeat(" + 1", 1000) + ";");
+        REQUIRE(result.ok());
+        const std::string out = rung::dump_ast(*result.program);
+        CHECK(out.compare(0, 7, "(print ") == 0);
+    }
 }

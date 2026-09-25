@@ -1,5 +1,6 @@
 #include "parser.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -73,6 +74,18 @@ private:
     private:
         Parser& parser_;
     };
+
+    // Adds one link to a chain whose longest part so far is `child_height` links, and returns
+    // the new length (notes §2.6, chain limit). Every node with an operand is one link: binary
+    // and logical operators, calls, indexes, unary operators, array literals, assignments. The
+    // length is the height of the syntax tree, so it counts through parentheses too:
+    // `(1 + 1) + 1` is a chain of 2. `line` is the token that made the link, as for every
+    // other node.
+    int link(int child_height, int line) const {
+        int height = child_height + 1;
+        if (height > kMaxChain) throw ParseAbort{CompileError{line, "expression chain too long"}};
+        return height;
+    }
 
     // ---- token helpers ----
 
@@ -266,14 +279,18 @@ private:
         if (!check(TokenKind::Equal)) return left;
 
         int equals_line = peek().line;
+        int left_height = height_;
         advance();
         if (auto* var = std::get_if<Variable>(&left->node)) {
             ExprPtr value = assignment_rhs();
+            height_ = link(height_, equals_line);
             return std::make_unique<Expr>(
                 Assign{var->name, std::move(value), Binding{}, var->line});
         }
         if (auto* index = std::get_if<Index>(&left->node)) {
             ExprPtr value = assignment_rhs();
+            // The IndexAssign replaces the Index node: same object and index, plus the value.
+            height_ = std::max(left_height, link(height_, equals_line));
             return std::make_unique<Expr>(IndexAssign{
                 std::move(index->object), std::move(index->index), std::move(value), index->line});
         }
@@ -293,10 +310,12 @@ private:
     // function per precedence level.
     ExprPtr binary(int min_precedence) {
         ExprPtr left = unary();
+        int height = height_;
         BinaryInfo info{};
         while (binary_info(peek().kind, info) && info.precedence >= min_precedence) {
             int line = advance().line;
             ExprPtr right = binary(info.precedence + 1);
+            height = link(std::max(height, height_), line);
             if (info.logical) {
                 left = std::make_unique<Expr>(
                     Logical{info.logic, std::move(left), std::move(right), line});
@@ -305,6 +324,7 @@ private:
                     Binary{info.binary, std::move(left), std::move(right), line});
             }
         }
+        height_ = height;
         return left;
     }
 
@@ -322,6 +342,7 @@ private:
                 TokenKind after = tokens_[pos_ + 1].kind;  // Eof always follows, so in range
                 if (after != TokenKind::LeftParen && after != TokenKind::LeftBracket) {
                     advance();
+                    height_ = 0;
                     return std::make_unique<Expr>(
                         Literal{std::numeric_limits<std::int32_t>::min(), line});
                 }
@@ -329,6 +350,7 @@ private:
 
             Nest nest(*this);
             ExprPtr operand = unary();
+            height_ = link(height_, line);
             return std::make_unique<Expr>(Unary{kind, std::move(operand), line});
         }
         return postfix();
@@ -336,19 +358,23 @@ private:
 
     ExprPtr postfix() {
         ExprPtr expr = primary();
+        int height = height_;
         for (;;) {
             if (match(TokenKind::LeftParen)) {
                 int line = previous().line;
                 std::vector<ExprPtr> args;
+                int args_height = 0;
                 {
                     Nest nest(*this);
                     if (!check(TokenKind::RightParen)) {
                         do {
                             args.push_back(expression());
+                            args_height = std::max(args_height, height_);
                         } while (match(TokenKind::Comma));
                     }
                 }
                 consume(TokenKind::RightParen, "expected ')' after arguments");
+                height = link(std::max(height, args_height), line);
                 expr = std::make_unique<Expr>(Call{std::move(expr), std::move(args), line});
             } else if (match(TokenKind::LeftBracket)) {
                 int line = previous().line;
@@ -358,8 +384,10 @@ private:
                     index = expression();
                 }
                 consume(TokenKind::RightBracket, "expected ']' after index");
+                height = link(std::max(height, height_), line);
                 expr = std::make_unique<Expr>(Index{std::move(expr), std::move(index), line});
             } else {
+                height_ = height;
                 return expr;
             }
         }
@@ -367,6 +395,7 @@ private:
 
     ExprPtr primary() {
         const Token& token = peek();
+        height_ = 0;  // a leaf; the parenthesis and array cases below overwrite it
         switch (token.kind) {
             case TokenKind::Int: {
                 if (token.int_value >= kIntMinMagnitude) {
@@ -400,19 +429,24 @@ private:
                 Nest nest(*this);
                 ExprPtr inner = expression();
                 consume(TokenKind::RightParen, "expected ')' after expression");
-                return inner;  // no grouping node: parentheses only affect the shape
+                // No grouping node and no link: parentheses only affect the shape, so a
+                // parenthesised chain keeps counting as part of the chain around it.
+                return inner;
             }
             case TokenKind::LeftBracket: {
                 advance();
                 int line = token.line;
                 Nest nest(*this);
                 std::vector<ExprPtr> elements;
+                int elements_height = 0;
                 if (!check(TokenKind::RightBracket)) {
                     do {
                         elements.push_back(expression());
+                        elements_height = std::max(elements_height, height_);
                     } while (match(TokenKind::Comma));
                 }
                 consume(TokenKind::RightBracket, "expected ']' after array elements");
+                height_ = link(elements_height, line);
                 return std::make_unique<Expr>(ArrayLiteral{std::move(elements), line});
             }
             default:
@@ -423,6 +457,9 @@ private:
     const std::vector<Token>& tokens_;
     std::size_t pos_ = 0;
     int depth_ = 0;
+    // The chain length (see link) of the expression parsed most recently. Each expression
+    // function reads it after parsing its operands and sets it before returning.
+    int height_ = 0;
 };
 
 }  // namespace
