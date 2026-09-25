@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "ast_dump.h"
+#include "compiler_reg.h"
 #include "compiler_stack.h"
 #include "disassembler.h"
 #include "lexer.h"
@@ -23,7 +24,8 @@ constexpr int kExitCompileError = 65;
 constexpr int kExitNoInput = 66;
 
 void print_usage() {
-    std::cerr << "usage: rung [--dump-tokens] [--dump-ast] [--dump-bytecode] <file.rg>\n";
+    std::cerr << "usage: rung [--engine=stack|register] [--dump-tokens] [--dump-ast] "
+                 "[--dump-bytecode] <file.rg>\n";
 }
 
 std::optional<std::string> read_file(const std::string& path) {
@@ -47,6 +49,9 @@ int main(int argc, char** argv) {
     bool want_tokens = false;
     bool want_ast = false;
     bool want_bytecode = false;
+    // Only --dump-bytecode looks at the engine so far: it picks which compiler's bytecode to
+    // print. The full --engine option (notes D12) arrives with the engines.
+    std::string_view engine = "stack";
     const char* path = nullptr;
 
     for (int i = 1; i < argc; ++i) {
@@ -57,6 +62,13 @@ int main(int argc, char** argv) {
             want_ast = true;
         } else if (arg == "--dump-bytecode") {
             want_bytecode = true;
+        } else if (arg.substr(0, 9) == "--engine=") {
+            engine = arg.substr(9);
+            if (engine != "stack" && engine != "register") {
+                std::cerr << "rung: unknown or unsupported engine '" << engine << "'\n";
+                print_usage();
+                return kExitUsage;
+            }
         } else if (!arg.empty() && arg[0] == '-') {
             std::cerr << "rung: unknown option '" << arg << "'\n";
             print_usage();
@@ -106,12 +118,21 @@ int main(int argc, char** argv) {
 
     if (want_bytecode) {
         rung::Heap heap;
-        rung::StackCompileResult compiled = rung::compile_stack(*parsed.program, heap);
-        if (!compiled.ok()) {
-            std::cerr << rung::format_error(*compiled.error) << "\n";
-            return kExitCompileError;
+        if (engine == "register") {
+            rung::RegCompileResult compiled = rung::compile_register(*parsed.program, heap);
+            if (!compiled.ok()) {
+                std::cerr << rung::format_error(*compiled.error) << "\n";
+                return kExitCompileError;
+            }
+            std::cout << rung::disassemble_register(*compiled.function);
+        } else {
+            rung::StackCompileResult compiled = rung::compile_stack(*parsed.program, heap);
+            if (!compiled.ok()) {
+                std::cerr << rung::format_error(*compiled.error) << "\n";
+                return kExitCompileError;
+            }
+            std::cout << rung::disassemble(*compiled.function);
         }
-        std::cout << rung::disassemble(*compiled.function);
     }
     if (want_ast || want_bytecode) return 0;
 

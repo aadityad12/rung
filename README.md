@@ -44,7 +44,8 @@ cmake --build --preset debug
 ctest --preset debug
 ./build/debug/rung --dump-tokens examples/hello.rg
 ./build/debug/rung --dump-ast examples/hello.rg
-./build/debug/rung --dump-bytecode examples/hello.rg
+./build/debug/rung --dump-bytecode examples/hello.rg                    # stack bytecode
+./build/debug/rung --dump-bytecode --engine=register examples/hello.rg  # register bytecode
 ```
 
 CI builds and tests on macOS ARM64, Linux ARM64, and Linux x86-64 (inside the `Dockerfile`).

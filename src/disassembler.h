@@ -33,4 +33,20 @@ std::string disassemble_function(const ObjFunction& function);
 // instruction.
 std::size_t disassemble_instruction(const Chunk& chunk, std::size_t offset, std::string& out);
 
+// Register bytecode (compile_register) in the same style. Rows show the instruction's index
+// (not a byte offset: every instruction is one 64-bit word), its source line, the opcode name and
+// its operands: `r3` is register 3, `k2(7)` is constant 2 (shown by value), and a jump shows the
+// absolute index it lands on, as `-> 0021`. The header adds the function's frame size:
+//
+//   == add (arity 2, upvalues 0, frame 3) ==
+//   0000    3 ADD            r2 r0 r1
+//   0001    3 RETURN         r2
+//
+// A CLOSURE row is followed by one row per Capture word (`local N` = register N of the
+// enclosing function, `upvalue N` = one of the enclosing closure's own upvalues).
+std::string disassemble_register(const ObjFunction& script);
+std::string disassemble_register_function(const ObjFunction& function);
+std::size_t disassemble_register_instruction(const RegChunk& chunk, std::size_t index,
+                                             std::string& out);
+
 }  // namespace rung
