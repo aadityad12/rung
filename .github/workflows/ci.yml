@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [debug, release, asan]
+        preset: [debug, release, asan, tsan]
     steps:
       - uses: actions/checkout@v5
       - name: Install Ninja
@@ -31,11 +31,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [debug, release, asan]
+        preset: [debug, release, asan, tsan]
     steps:
       - uses: actions/checkout@v5
       - name: Install toolchain
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang cmake ninja-build
+      # ThreadSanitizer maps shadow memory at fixed addresses and aborts at startup ("unexpected
+      # memory mapping") when the kernel randomizes mmap addresses over more bits than the
+      # sanitizer expects. This is a known Linux/TSan issue; 28 bits is the value TSan supports.
+      - name: Lower mmap ASLR entropy for ThreadSanitizer
+        if: matrix.preset == 'tsan'
+        run: sudo sysctl vm.mmap_rnd_bits=28
       - run: cmake --preset ${{ matrix.preset }}
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --preset ${{ matrix.preset }}
