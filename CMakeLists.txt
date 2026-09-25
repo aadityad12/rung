@@ -142,12 +142,31 @@ endif()
 # nothing to check in it; the tsan job exists for the JIT's threads (notes D8).
 if(NOT RUNG_SANITIZE STREQUAL "thread")
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+  # Under --gc-stress every allocation is a full collection, so a program that keeps N calls
+  # active does N collections that each visit about N scopes: the work grows with the square of
+  # the depth. The six tests that go 6,000 to 10,000 calls deep each took more than 4 seconds under
+  # ASan on a laptop (25 seconds for the deepest) and did not finish in five minutes on the
+  # Linux arm64 CI runner, so ASan runs skip them (the runner names each one as SKIPPED). They still run under --gc-stress in
+  # debug and release, and under ASan without it, and every shallower recursion test runs in all.
+  set(RUNG_GC_STRESS_SKIPS)
+  if(RUNG_SANITIZE MATCHES "address")
+    set(RUNG_GC_STRESS_SKIPS
+      --skip functions/call_depth_resets_after_returning.rg
+      --skip functions/infinite_recursion_overflows_the_stack.rg
+      --skip functions/mutual_recursion_overflows_the_stack.rg
+      --skip functions/nine_thousand_nine_hundred_ninety_nine_nested_calls_succeed.rg
+      --skip functions/stack_overflow_keeps_earlier_output.rg
+      --skip functions/ten_thousand_and_one_nested_calls_overflow.rg)
+  endif()
+
   foreach(engine tree)
     add_test(NAME conformance-${engine}
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
               --rung $<TARGET_FILE:rung> --engine ${engine} --timeout 120)
     add_test(NAME conformance-${engine}-gc-stress
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
-              --rung $<TARGET_FILE:rung> --engine ${engine} --gc-stress --timeout 300)
+              --rung $<TARGET_FILE:rung> --engine ${engine} --gc-stress --timeout 300
+              ${RUNG_GC_STRESS_SKIPS})
   endforeach()
 endif()
