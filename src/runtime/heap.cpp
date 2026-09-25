@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "runtime/function.h"
+
 namespace rung {
 
 Heap::~Heap() {
@@ -68,6 +70,23 @@ void Heap::trace(Obj* obj) {
         case ObjKind::Array:
             for (Value v : static_cast<ObjArray*>(obj)->elements) mark_value(v);
             break;
+        case ObjKind::Function: {
+            auto* fn = static_cast<ObjFunction*>(obj);
+            mark_object(fn->name);  // null for the script
+            for (Value v : fn->chunk.constants) mark_value(v);
+            break;
+        }
+        case ObjKind::Closure: {
+            auto* closure = static_cast<ObjClosure*>(obj);
+            mark_object(closure->function);
+            for (ObjUpvalue* upvalue : closure->upvalues) mark_object(upvalue);  // null-safe
+            break;
+        }
+        case ObjKind::Upvalue:
+            // An open upvalue's variable is on the VM stack, which the engine's root marker
+            // already marks; `closed` is nil until the upvalue closes, so marking it is safe.
+            mark_value(static_cast<ObjUpvalue*>(obj)->closed);
+            break;
         case ObjKind::String:
         case ObjKind::Native:
             break;
@@ -121,6 +140,15 @@ void Heap::free_object(Obj* obj) {
             break;
         case ObjKind::Native:
             delete static_cast<ObjNative*>(obj);
+            break;
+        case ObjKind::Function:
+            delete static_cast<ObjFunction*>(obj);
+            break;
+        case ObjKind::Closure:
+            delete static_cast<ObjClosure*>(obj);
+            break;
+        case ObjKind::Upvalue:
+            delete static_cast<ObjUpvalue*>(obj);
             break;
     }
 }

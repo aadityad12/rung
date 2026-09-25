@@ -8,6 +8,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "runtime/function.h"
+
 namespace rung {
 
 namespace {
@@ -74,6 +76,12 @@ bool numeric_compare(Value a, Value b, Value* out, std::string* error, IntCmp in
 }
 
 // Appends a non-array value. Arrays are handled by print_value's explicit stack.
+// `<fn NAME>` (notes §2.3). Only the top-level script has no name; it is never printed by a
+// program, but the disassembler and debugging output can show it.
+std::string function_label(const ObjFunction& fn) {
+    return fn.name != nullptr ? "<fn " + fn.name->chars + ">" : "<script>";
+}
+
 void print_object(const Obj& obj, std::string& out) {
     // No `default`: a new ObjKind must be handled here or the build fails (-Wswitch, -Werror).
     switch (obj.kind) {
@@ -85,6 +93,15 @@ void print_object(const Obj& obj, std::string& out) {
             return;
         case ObjKind::Array:
             out += "[...]";  // unreachable from print_value; a safe answer if ever called directly
+            return;
+        case ObjKind::Function:
+            out += function_label(static_cast<const ObjFunction&>(obj));
+            return;
+        case ObjKind::Closure:  // a closure is what the program sees as "a function"
+            out += function_label(*static_cast<const ObjClosure&>(obj).function);
+            return;
+        case ObjKind::Upvalue:
+            out += "<upvalue>";  // never a program-visible value; the VM keeps them out of slots
             return;
     }
 }
