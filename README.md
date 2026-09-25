@@ -48,6 +48,27 @@ ctest --preset debug
 
 CI builds and tests on macOS ARM64, Linux ARM64, and Linux x86-64 (inside the `Dockerfile`).
 
+## Testing
+
+Two kinds of tests:
+
+- **Unit tests** (`tests/unit/`, doctest) check one component at a time: lexer, parser, resolver,
+  runtime, ARM64 encoder. `ctest --preset debug` runs them.
+- **The conformance suite** (`tests/conformance/`) is a directory of small Rung programs that
+  state their expected output, and their expected error message and line, in comments next to
+  the code. It is the executable form of the semantics contract in
+  [`docs/notes.md`](docs/notes.md) §2. `tests/run_conformance.py` runs one engine over every
+  program and compares stdout, the exit code and the first line of stderr exactly:
+
+  ```sh
+  python3 tests/run_conformance.py --rung build/debug/rung --engine tree [--gc-stress] [FILTER...]
+  ```
+
+  Every engine has to pass every test, so a ladder rung that changes any observable behaviour
+  fails here. See [`tests/conformance/README.md`](tests/conformance/README.md) for the format
+  and how to add a test. No engine executes programs yet, so the suite is not registered with
+  `ctest` yet.
+
 ## Design notes
 
 Every design decision, what it replaced, and why, is recorded in
