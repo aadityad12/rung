@@ -173,6 +173,18 @@ still needs sign-off. Nothing `PROPOSED` should be built on without checking fir
   - On macOS, `pthread_jit_write_protect_np` is per-thread, so the compiler thread can hold
     its pages writable while the main thread keeps executing other, already-finished code.
   - Test early that TSan builds work at all alongside `MAP_JIT` on macOS.
+- **TSan and `MAP_JIT` check (result, recorded when `ExecBuffer` landed).** ThreadSanitizer
+  and `MAP_JIT` work together on macOS arm64 (macOS 26.6, Apple clang 21): the `tsan` preset
+  builds `src/jit/exec_memory.cpp`, maps the buffers with `MAP_JIT`, and runs code out of them
+  with no reports and no crashes. The `exec memory` unit tests include a two-thread case: one
+  thread rewrites its own buffer (its `pthread_jit_write_protect_np` toggle flips) while the
+  main thread keeps calling code from a different, finished buffer, and a case where one thread
+  writes code and another runs it after a `join`. No workaround (such as excluding the JIT from
+  the TSan build) was needed. The `tsan` CI job runs the whole unit-test suite on both macOS
+  and Linux arm64. The expected division of labour is unchanged: TSan checks the C++ side of the
+  handoff (the atomic pointer, the queue) but cannot see inside generated code.
+  - Linux runners need `vm.mmap_rnd_bits` lowered to 28 before TSan starts; that is a
+    kernel/TSan startup issue unrelated to the JIT and is set in `ci.yml`.
 
 ### D9. Lexical rules. `DECIDED` (2026-09-20)
 
@@ -456,4 +468,15 @@ _(none right now)_
 For each rung: what was expected, what was measured, why they differed. For the JIT: every
 crash and its cause.
 
-_(empty)_
+### JIT crashes and their causes
+
+- **Intermittent SEGV calling freshly written code, Linux arm64, asan preset only (about 5% of
+  runs).** First suspected the instruction cache. It was not: the same code with no flush at all
+  never failed in isolation, and the fault was in the calling C++, not in the generated code.
+  Cause: UBSan's function check (`-fsanitize=function`, part of the asan preset) reads the 8
+  bytes *before* the target of every C++ call through a function pointer, looking for a type
+  signature. With the code at offset 0 of a fresh `mmap`, that read hit the last 8 bytes of the
+  previous page, which is unmapped whenever the kernel places the mapping next to a gap. Fix:
+  `ExecBuffer` puts 16 zero bytes in front of the code (zeros mean "no signature", so the check
+  passes), so every caller of `entry()` is protected. Found by looping the test 300 to 600
+  times in CI; a single run passed most of the time.
