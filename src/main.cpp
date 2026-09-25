@@ -8,9 +8,12 @@
 #include <utility>
 
 #include "ast_dump.h"
+#include "compiler_stack.h"
+#include "disassembler.h"
 #include "lexer.h"
 #include "parser.h"
 #include "resolver.h"
+#include "runtime/heap.h"
 
 namespace {
 
@@ -20,7 +23,7 @@ constexpr int kExitCompileError = 65;
 constexpr int kExitNoInput = 66;
 
 void print_usage() {
-    std::cerr << "usage: rung [--dump-tokens] [--dump-ast] <file.rg>\n";
+    std::cerr << "usage: rung [--dump-tokens] [--dump-ast] [--dump-bytecode] <file.rg>\n";
 }
 
 std::optional<std::string> read_file(const std::string& path) {
@@ -43,6 +46,7 @@ void dump_tokens(const std::vector<rung::Token>& tokens) {
 int main(int argc, char** argv) {
     bool want_tokens = false;
     bool want_ast = false;
+    bool want_bytecode = false;
     const char* path = nullptr;
 
     for (int i = 1; i < argc; ++i) {
@@ -51,6 +55,8 @@ int main(int argc, char** argv) {
             want_tokens = true;
         } else if (arg == "--dump-ast") {
             want_ast = true;
+        } else if (arg == "--dump-bytecode") {
+            want_bytecode = true;
         } else if (!arg.empty() && arg[0] == '-') {
             std::cerr << "rung: unknown option '" << arg << "'\n";
             print_usage();
@@ -96,11 +102,20 @@ int main(int argc, char** argv) {
         return kExitCompileError;
     }
 
-    if (want_ast) {
-        std::cout << rung::dump_ast(*parsed.program);
-        return 0;
-    }
+    if (want_ast) std::cout << rung::dump_ast(*parsed.program);
 
-    std::cerr << "rung: no execution engine yet; try --dump-tokens or --dump-ast\n";
+    if (want_bytecode) {
+        rung::Heap heap;
+        rung::StackCompileResult compiled = rung::compile_stack(*parsed.program, heap);
+        if (!compiled.ok()) {
+            std::cerr << rung::format_error(*compiled.error) << "\n";
+            return kExitCompileError;
+        }
+        std::cout << rung::disassemble(*compiled.function);
+    }
+    if (want_ast || want_bytecode) return 0;
+
+    std::cerr << "rung: no execution engine yet; try --dump-tokens, --dump-ast or "
+                 "--dump-bytecode\n";
     return 1;
 }

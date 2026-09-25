@@ -1,5 +1,7 @@
 #include "runtime/object.h"
 
+#include "runtime/function.h"
+
 namespace rung {
 
 std::uint32_t fnv1a(std::string_view bytes) {
@@ -25,6 +27,18 @@ std::size_t object_bytes(const Obj& obj) {
             const auto& n = static_cast<const ObjNative&>(obj);
             return sizeof(ObjNative) + n.name.capacity();
         }
+        case ObjKind::Function: {
+            // A function's chunk grows after the object is linked, so the heap's running total
+            // under-counts it until the next collection recounts (sweep uses this function).
+            const auto& f = static_cast<const ObjFunction&>(obj);
+            return sizeof(ObjFunction) + f.chunk.owned_bytes();
+        }
+        case ObjKind::Closure: {
+            const auto& c = static_cast<const ObjClosure&>(obj);
+            return sizeof(ObjClosure) + c.upvalues.capacity() * sizeof(ObjUpvalue*);
+        }
+        case ObjKind::Upvalue:
+            return sizeof(ObjUpvalue);
     }
     return sizeof(Obj);
 }

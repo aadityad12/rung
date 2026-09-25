@@ -13,9 +13,10 @@ namespace rung {
 
 class Heap;
 
-// Later issues append kinds (TreeFunction, Environment, Function, Closure, Upvalue). Add the
-// kind here, then to object_bytes (object.cpp) and trace / free_object (heap.cpp).
-enum class ObjKind : std::uint8_t { String, Array, Native };
+// Later issues append kinds (TreeFunction, Environment). Add the kind here, then to
+// object_bytes (object.cpp) and trace / free_object (heap.cpp). Function, Closure and Upvalue
+// are the stack VM's; their structs live in runtime/function.h because they contain a Chunk.
+enum class ObjKind : std::uint8_t { String, Array, Native, Function, Closure, Upvalue };
 
 // Common header. Every heap object derives from this and lives on the Heap's intrusive list.
 // There is no virtual destructor: the Heap frees each object through its concrete type.
