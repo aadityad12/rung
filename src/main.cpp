@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "ast_dump.h"
+#include "compiler_reg.h"
 #include "compiler_stack.h"
 #include "disassembler.h"
 #include "engine.h"
@@ -53,7 +54,8 @@ void print_usage() {
         separator = "|";
     }
     std::cerr << "] [--gc-stress] [--stats]\n"
-                 "            [--dump-tokens | --dump-ast | --dump-bytecode] <file.rg>\n";
+                 "            [--dump-tokens | --dump-ast | --dump-bytecode] <file.rg>\n"
+                 "       --dump-bytecode also accepts --engine=stack|register\n";
 }
 
 std::optional<std::string> read_file(const std::string& path) {
@@ -114,12 +116,21 @@ int execute(const Options& options) {
 
     if (options.want_bytecode) {
         rung::Heap heap;
-        rung::StackCompileResult compiled = rung::compile_stack(*parsed.program, heap);
-        if (!compiled.ok()) {
-            std::cerr << rung::format_error(*compiled.error) << "\n";
-            return kExitCompileError;
+        if (options.engine == "register") {
+            rung::RegCompileResult compiled = rung::compile_register(*parsed.program, heap);
+            if (!compiled.ok()) {
+                std::cerr << rung::format_error(*compiled.error) << "\n";
+                return kExitCompileError;
+            }
+            std::cout << rung::disassemble_register(*compiled.function);
+        } else {
+            rung::StackCompileResult compiled = rung::compile_stack(*parsed.program, heap);
+            if (!compiled.ok()) {
+                std::cerr << rung::format_error(*compiled.error) << "\n";
+                return kExitCompileError;
+            }
+            std::cout << rung::disassemble(*compiled.function);
         }
-        std::cout << rung::disassemble(*compiled.function);
     }
     if (options.want_ast || options.want_bytecode) return kExitOk;
 
@@ -210,8 +221,12 @@ int main(int argc, char** argv) {
         print_usage();
         return kExitUsage;
     }
+    // --dump-bytecode needs only a compiler, not a runnable engine, so it also accepts the
+    // bytecode formats whose engines do not exist yet. "tree" (the default) dumps stack bytecode.
     std::vector<std::string_view> engines = rung::engine_names();
-    if (std::find(engines.begin(), engines.end(), options.engine) == engines.end()) {
+    bool runnable = std::find(engines.begin(), engines.end(), options.engine) != engines.end();
+    bool has_compiler = options.engine == "stack" || options.engine == "register";
+    if (!runnable && !(options.want_bytecode && has_compiler)) {
         std::cerr << "rung: unknown engine '" << options.engine << "'\n";
         print_usage();
         return kExitUsage;

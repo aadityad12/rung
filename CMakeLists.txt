@@ -56,6 +56,8 @@ add_library(rung_core STATIC
   src/ast.cpp
   src/ast_dump.cpp
   src/bytecode/chunk.cpp
+  src/bytecode/register_code.cpp
+  src/compiler_reg.cpp
   src/compiler_stack.cpp
   src/diagnostic.cpp
   src/disassembler.cpp
@@ -91,6 +93,7 @@ enable_testing()
 add_executable(rung_unit_tests
   tests/unit/test_main.cpp
   tests/unit/arm64_emitter_test.cpp
+  tests/unit/compiler_reg_test.cpp
   tests/unit/compiler_stack_test.cpp
   tests/unit/engine_tree_test.cpp
   tests/unit/lexer_test.cpp

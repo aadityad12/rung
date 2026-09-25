@@ -248,4 +248,200 @@ std::string disassemble(const ObjFunction& script) {
     return out;
 }
 
+// ---- Register bytecode ------------------------------------------------------------------------
+// Same row layout as above; `r3` is register 3 and `k2(7)` constant 2, shown by value.
+
+namespace {
+
+const char* reg_op_name(RegOp op) {
+    switch (op) {
+        case RegOp::Move: return "MOVE";
+        case RegOp::LoadK: return "LOADK";
+        case RegOp::LoadNil: return "LOADNIL";
+        case RegOp::LoadTrue: return "LOADTRUE";
+        case RegOp::LoadFalse: return "LOADFALSE";
+        case RegOp::GetGlobal: return "GET_GLOBAL";
+        case RegOp::SetGlobal: return "SET_GLOBAL";
+        case RegOp::DefineGlobal: return "DEFINE_GLOBAL";
+        case RegOp::GetUpvalue: return "GET_UPVALUE";
+        case RegOp::SetUpvalue: return "SET_UPVALUE";
+        case RegOp::Add: return "ADD";
+        case RegOp::Sub: return "SUB";
+        case RegOp::Mul: return "MUL";
+        case RegOp::Div: return "DIV";
+        case RegOp::Mod: return "MOD";
+        case RegOp::Eq: return "EQ";
+        case RegOp::Ne: return "NE";
+        case RegOp::Lt: return "LT";
+        case RegOp::Le: return "LE";
+        case RegOp::Gt: return "GT";
+        case RegOp::Ge: return "GE";
+        case RegOp::Neg: return "NEG";
+        case RegOp::Not: return "NOT";
+        case RegOp::Jump: return "JUMP";
+        case RegOp::JumpIfFalse: return "JUMP_IF_FALSE";
+        case RegOp::JumpIfTrue: return "JUMP_IF_TRUE";
+        case RegOp::Call: return "CALL";
+        case RegOp::Closure: return "CLOSURE";
+        case RegOp::Capture: return "CAPTURE";
+        case RegOp::Close: return "CLOSE";
+        case RegOp::Return: return "RETURN";
+        case RegOp::ReturnNil: return "RETURN_NIL";
+        case RegOp::Print: return "PRINT";
+        case RegOp::Array: return "ARRAY";
+        case RegOp::ArrayAppend: return "ARRAY_APPEND";
+        case RegOp::IndexGet: return "INDEX_GET";
+        case RegOp::IndexSet: return "INDEX_SET";
+    }
+    return "UNKNOWN";
+}
+
+std::string reg_text(std::uint32_t reg) { return "r" + std::to_string(reg); }
+
+// `k3(7)`: constant 3, shown by value.
+std::string const_text(const RegChunk& chunk, std::uint32_t index) {
+    std::string out = "k" + std::to_string(index) + "(";
+    out += index < chunk.constants.size() ? constant_text(chunk.constants[index])
+                                          : "<bad constant>";
+    return out + ")";
+}
+
+// An RK operand: a register or, when its flag is set, a constant.
+std::string rk_text(const RegChunk& chunk, std::uint32_t operand, bool is_const) {
+    return is_const ? const_text(chunk, operand) : reg_text(operand);
+}
+
+}  // namespace
+
+std::size_t disassemble_register_instruction(const RegChunk& chunk, std::size_t index,
+                                             std::string& out) {
+    Instruction insn = chunk.code[index];
+    RegOp op = insn_op(insn);
+    std::uint32_t a = insn_a(insn);
+    std::uint32_t b = insn_b(insn);
+    std::uint32_t c = insn_c(insn);
+    bool b_const = (insn_flags(insn) & kFlagBConst) != 0;
+    bool c_const = (insn_flags(insn) & kFlagCConst) != 0;
+    const char* name = reg_op_name(op);
+    std::size_t next = index + 1;
+
+    append_format(out, "%04zu %4d ", index, chunk.line_at(index));
+    std::string operands;
+    switch (op) {
+        case RegOp::ReturnNil:
+            out += name;
+            out += '\n';
+            return next;
+        case RegOp::Move: operands = reg_text(a) + " " + reg_text(b); break;
+        case RegOp::LoadK: operands = reg_text(a) + " " + const_text(chunk, insn_bx(insn)); break;
+        case RegOp::LoadNil:
+        case RegOp::LoadTrue:
+        case RegOp::LoadFalse:
+        case RegOp::Close: operands = reg_text(a); break;
+        case RegOp::GetGlobal:
+        case RegOp::SetGlobal:
+        case RegOp::DefineGlobal:
+            operands = reg_text(a) + " " + const_text(chunk, insn_bx(insn));
+            break;
+        case RegOp::GetUpvalue:
+        case RegOp::SetUpvalue: operands = reg_text(a) + " " + std::to_string(b); break;
+        case RegOp::Add:
+        case RegOp::Sub:
+        case RegOp::Mul:
+        case RegOp::Div:
+        case RegOp::Mod:
+        case RegOp::Eq:
+        case RegOp::Ne:
+        case RegOp::Lt:
+        case RegOp::Le:
+        case RegOp::Gt:
+        case RegOp::Ge:
+        case RegOp::IndexGet:
+        case RegOp::IndexSet:
+            operands = reg_text(a) + " " + rk_text(chunk, b, b_const) + " " +
+                       rk_text(chunk, c, c_const);
+            break;
+        case RegOp::Neg:
+        case RegOp::Not: operands = reg_text(a) + " " + rk_text(chunk, b, b_const); break;
+        case RegOp::Return:
+        case RegOp::Print: operands = rk_text(chunk, b, b_const); break;
+        case RegOp::Jump:
+        case RegOp::JumpIfFalse:
+        case RegOp::JumpIfTrue: {
+            // The offset counts from the next instruction (see RegOp::Jump).
+            long long target = static_cast<long long>(next) + insn_sbx(insn);
+            if (op != RegOp::Jump) operands = reg_text(a) + " ";
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "-> %04lld", target);
+            operands += buf;
+            break;
+        }
+        case RegOp::Call: operands = reg_text(a) + " " + std::to_string(b); break;
+        case RegOp::Array:
+        case RegOp::ArrayAppend:
+            operands = reg_text(a) + " " + reg_text(b) + " " + std::to_string(c);
+            break;
+        case RegOp::Capture:
+            // Only ever printed under its CLOSURE row, below; a stray one shows its fields.
+            operands = std::to_string(a) + " " + std::to_string(b);
+            break;
+        case RegOp::Closure: {
+            std::uint32_t k = insn_bx(insn);
+            bool is_fn = k < chunk.constants.size() && is_function(chunk.constants[k]);
+            append_format(out, "%-14s %s %s\n", name, reg_text(a).c_str(),
+                          const_text(chunk, k).c_str());
+            if (!is_fn) return next;
+            int count = as_function(chunk.constants[k])->upvalue_count;
+            for (int i = 0; i < count; ++i) {
+                if (next >= chunk.code.size()) {
+                    out += "     <truncated>\n";
+                    return chunk.code.size();
+                }
+                Instruction cap = chunk.code[next];
+                // The Capture words are operands of CLOSURE, shown at their own indices.
+                append_format(out, "%04zu %4d %-14s %s %u\n", next, chunk.line_at(next), "  |",
+                              insn_a(cap) != 0 ? "local" : "upvalue",
+                              static_cast<unsigned>(insn_b(cap)));
+                ++next;
+            }
+            return next;
+        }
+    }
+    append_format(out, "%-14s %s\n", name, operands.c_str());
+    return next;
+}
+
+std::string disassemble_register_function(const ObjFunction& function) {
+    std::string out;
+    if (function.name != nullptr) {
+        out += "== " + function.name->chars + " (arity " + std::to_string(function.arity) +
+               ", upvalues " + std::to_string(function.upvalue_count) + ", frame " +
+               std::to_string(function.reg.frame_size) + ") ==\n";
+    } else {
+        out += "== <script> (frame " + std::to_string(function.reg.frame_size) + ") ==\n";
+    }
+    for (std::size_t index = 0; index < function.reg.code.size();) {
+        index = disassemble_register_instruction(function.reg, index, out);
+    }
+    return out;
+}
+
+namespace {
+
+void disassemble_register_tree(const ObjFunction& fn, std::string& out) {
+    if (!out.empty()) out += '\n';
+    out += disassemble_register_function(fn);
+    for (Value v : fn.reg.constants) {
+        if (is_function(v)) disassemble_register_tree(*as_function(v), out);
+    }
+}
+
+}  // namespace
+
+std::string disassemble_register(const ObjFunction& script) {
+    std::string out;
+    disassemble_register_tree(script, out);
+    return out;
+}
+
 }  // namespace rung
