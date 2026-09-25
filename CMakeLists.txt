@@ -25,7 +25,10 @@ endif()
 # Everything except main(), so tests link the same code the CLI runs.
 add_library(rung_core STATIC
   src/ast_dump.cpp
+  src/bytecode/chunk.cpp
+  src/compiler_stack.cpp
   src/diagnostic.cpp
+  src/disassembler.cpp
   src/jit/arm64_emitter.cpp
   src/lexer.cpp
   src/runtime/heap.cpp
@@ -54,6 +57,7 @@ enable_testing()
 add_executable(rung_unit_tests
   tests/unit/test_main.cpp
   tests/unit/arm64_emitter_test.cpp
+  tests/unit/compiler_stack_test.cpp
   tests/unit/lexer_test.cpp
   tests/unit/runtime_heap_test.cpp
   tests/unit/parser_test.cpp
