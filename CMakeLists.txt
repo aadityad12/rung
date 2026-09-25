@@ -26,6 +26,8 @@ endif()
 add_library(rung_core STATIC
   src/diagnostic.cpp
   src/lexer.cpp
+  src/runtime/heap.cpp
+  src/runtime/object.cpp
   src/token.cpp
 )
 target_include_directories(rung_core PUBLIC src)
@@ -39,6 +41,7 @@ enable_testing()
 add_executable(rung_unit_tests
   tests/unit/test_main.cpp
   tests/unit/lexer_test.cpp
+  tests/unit/runtime_heap_test.cpp
 )
 target_include_directories(rung_unit_tests SYSTEM PRIVATE third_party/doctest)
 target_link_libraries(rung_unit_tests PRIVATE rung_core rung_warnings)
