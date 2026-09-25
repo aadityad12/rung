@@ -431,6 +431,43 @@ argument list, an index, a unary operator, the right side of `=`, a `{ }` block,
 an `if` / `while` / `for`. A top-level statement or expression is level zero, and long flat
 chains such as `1 + 1 + ... + 1` do not nest.
 
+**Resolver messages** (notes D11). The resolver runs after the parser succeeds and stops at the
+first error. Lines are the offending token's line, with these specifics: a name error (`let`,
+function name, parameter) is the line of the name itself; `too many arguments` is the line of the
+call's `(`; `too many captured variables` is the line of the variable use that pushed a function
+over the limit; `can't return from top-level code` is the line of `return`.
+
+| Situation | Message |
+|---|---|
+| `return` outside any function | `can't return from top-level code` |
+| a name declared twice in the same local scope (`let`, `fn`, or parameter) | `variable 'x' is already declared in this scope` |
+| a local read or assigned inside its own `let` initializer (`{ let a = a; }`) | `can't read local variable 'a' in its own initializer` |
+| more than 255 parameters | `too many parameters` |
+| more than 255 arguments in one call | `too many arguments` |
+| more than 255 locals live at once in one function | `too many local variables` |
+| more than 255 distinct variables captured by one function | `too many captured variables` |
+
+Rules behind the table, which every engine relies on:
+
+- Globals (top-level `let` / `fn` outside any block) are never checked for redeclaration and are
+  never counted against any limit.
+- A function's parameters and the statements directly in its body share **one** scope, so
+  `fn f(a) { let a; }` is a redeclaration and a use of `a` in the body is `a@0`. A nested block
+  adds a scope.
+- Every function and every block is one scope, so the "hops" of a local use is the number of
+  those scopes between the use and the declaration, counted across function boundaries.
+- "Locals" counts parameters, `let`s, and the names of functions declared inside blocks or
+  functions. A block's locals stop being live when it ends. The top-level script is treated as a
+  function for this limit (its locals are the ones inside blocks, including `for` loop
+  variables).
+- A variable is "captured" by a function when the function, or any function nested inside it,
+  uses a local of a function that encloses it. It is counted once per function however often it
+  is used, and it counts in every function between the use and the owner (clox counts upvalues
+  the same way). Globals are never captured.
+- A local being initialised counts as declared: in `{ let a = 1; { let a = a; } }` the inner
+  read is the error, not a read of the outer `a`. Assigning to such a local (`let a = (a = 1);`)
+  is the same error.
+
 ---
 
 ## 3. Resolved from spec §12

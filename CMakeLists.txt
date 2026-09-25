@@ -31,6 +31,7 @@ add_library(rung_core STATIC
   src/runtime/heap.cpp
   src/runtime/object.cpp
   src/parser.cpp
+  src/resolver.cpp
   src/token.cpp
 )
 target_include_directories(rung_core PUBLIC src)
@@ -47,6 +48,7 @@ add_executable(rung_unit_tests
   tests/unit/lexer_test.cpp
   tests/unit/runtime_heap_test.cpp
   tests/unit/parser_test.cpp
+  tests/unit/resolver_test.cpp
 )
 target_include_directories(rung_unit_tests SYSTEM PRIVATE third_party/doctest)
 target_link_libraries(rung_unit_tests PRIVATE rung_core rung_warnings)

@@ -10,6 +10,7 @@
 #include "ast_dump.h"
 #include "lexer.h"
 #include "parser.h"
+#include "resolver.h"
 
 namespace {
 
@@ -86,6 +87,12 @@ int main(int argc, char** argv) {
     rung::ParseResult parsed = rung::parse(std::move(*source));
     if (!parsed.ok()) {
         std::cerr << rung::format_error(*parsed.error) << "\n";
+        return kExitCompileError;
+    }
+
+    // Static errors and variable bindings, once, before any engine (notes D11).
+    if (std::optional<rung::CompileError> error = rung::resolve(*parsed.program)) {
+        std::cerr << rung::format_error(*error) << "\n";
         return kExitCompileError;
     }
 

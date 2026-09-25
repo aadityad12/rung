@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <variant>
 
 namespace rung {
@@ -11,11 +12,11 @@ namespace {
 // Format of --dump-ast. Every node is "(head child ...)"; leaves are bare.
 //
 //   literals      1  2.5  "text"  true  false  nil
-//   variable      x
+//   variable      x   (after the resolver: x@global, or x@N for a local N scopes up)
 //   unary         (- x)  (! x)
 //   binary        (+ a b)  (== a b)  ... all of + - * / % == != < <= > >=
 //   logical       (and a b)  (or a b)
-//   assignment    (set x v)  (set-index a i v)
+//   assignment    (set x v)  (set x@global v)  (set-index a i v)
 //   call, index   (call f 1 2)  (index a 0)
 //   array         (array 1 2)
 //   statements    (print e)  (expr e)  (let x)  (let x e)  (return)  (return e)
@@ -23,6 +24,16 @@ namespace {
 //                 (fn name (p1 p2) (block s ...))
 //
 // A `for` loop has no node of its own; it shows up as its desugared block and while.
+
+// A variable use's name, with its resolver binding once there is one (notes D11):
+// `x@global`, or `x@N` for a local declared N scopes up. Unresolved trees print the bare name,
+// which is what the parser tests see.
+std::string use_name(std::string_view name, const Binding& binding) {
+    std::string out(name);
+    if (binding.kind == BindingKind::Global) out += "@global";
+    if (binding.kind == BindingKind::Local) out += "@" + std::to_string(binding.hops);
+    return out;
+}
 
 std::string quote(const std::string& text) {
     std::string out = "\"";
@@ -87,9 +98,9 @@ struct ExprDumper {
         };
         return std::visit(V{}, n.value);
     }
-    std::string operator()(const Variable& n) const { return std::string(n.name); }
+    std::string operator()(const Variable& n) const { return use_name(n.name, n.binding); }
     std::string operator()(const Assign& n) const {
-        return "(set " + std::string(n.name) + " " + dump_expr(*n.value) + ")";
+        return "(set " + use_name(n.name, n.binding) + " " + dump_expr(*n.value) + ")";
     }
     std::string operator()(const Unary& n) const {
         return std::string("(") + (n.op == UnaryOp::Not ? "!" : "-") + " " +
