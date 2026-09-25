@@ -276,3 +276,26 @@ TEST_CASE("stress mode: everything rooted survives, garbage does not") {
     }
     heap.remove_root_marker(handle);
 }
+
+TEST_CASE("tree-walker objects: an environment keeps its enclosing scope, names and values alive") {
+    Heap heap;
+    Value name = str(heap, "x");
+    Value text = str(heap, "value");
+    auto* outer = heap.allocate<ObjEnvironment>(nullptr);
+    auto* inner = heap.allocate<ObjEnvironment>(outer);
+    inner->vars[as_string(name)] = text;
+    auto* fn = heap.allocate<ObjTreeFunction>(as_string(name), nullptr, inner);
+    str(heap, "garbage");
+    heap.allocate<ObjEnvironment>(nullptr);  // an unreachable scope
+
+    Heap::RootHandle handle = heap.add_root_marker([&](Heap& h) { h.mark_object(fn); });
+    heap.collect();
+    // fn, inner, outer, "x", "value"; the garbage string and the stray scope are gone.
+    CHECK(heap.stats().live_objects == 5);
+    CHECK(inner->enclosing == outer);
+    CHECK(as_string(inner->vars.at(as_string(name)))->chars == "value");
+    CHECK(heap.intern(std::string_view("value")) == as_string(text));  // still interned
+    heap.remove_root_marker(handle);
+    heap.collect();
+    CHECK(heap.stats().live_objects == 0);
+}

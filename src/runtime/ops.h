@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 
 #include "runtime/heap.h"
 #include "runtime/value.h"
@@ -80,5 +81,15 @@ bool array_set(Value array, Value index, Value value, std::string* error);
 // "expected A arguments but got B". Callers check arity before calling a Rung or native
 // function, so that every engine (and every native) words it identically.
 std::string arity_error_message(int expected, int got);
+// "undefined variable 'NAME'": reading or assigning a global that was never defined.
+std::string undefined_variable_message(std::string_view name);
+// "can only call functions"
+constexpr const char* kErrNotCallable = "can only call functions";
+
+// ---- Call depth (§2.4) -----------------------------------------------------------------------
+// The most Rung calls that may be active at once, in every engine. The 10,001st is the runtime
+// error kErrStackOverflow. Native functions and the top-level script do not count.
+constexpr int kMaxCallDepth = 10000;
+constexpr const char* kErrStackOverflow = "stack overflow";
 
 }  // namespace rung

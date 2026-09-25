@@ -58,8 +58,11 @@ add_library(rung_core STATIC
   src/compiler_stack.cpp
   src/diagnostic.cpp
   src/disassembler.cpp
+  src/engine.cpp
+  src/engine_tree.cpp
   src/jit/arm64_emitter.cpp
   src/lexer.cpp
+  src/output.cpp
   src/runtime/heap.cpp
   src/runtime/natives.cpp
   src/runtime/object.cpp
@@ -78,8 +81,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
   target_sources(rung_core PRIVATE src/jit/exec_memory.cpp)
 endif()
 
+find_package(Threads REQUIRED)  # the engine runs on its own big-stack thread (notes D12)
 add_executable(rung src/main.cpp)
-target_link_libraries(rung PRIVATE rung_core rung_warnings)
+target_link_libraries(rung PRIVATE rung_core rung_warnings Threads::Threads)
 
 # Unit tests (doctest, vendored single header).
 enable_testing()
@@ -87,6 +91,7 @@ add_executable(rung_unit_tests
   tests/unit/test_main.cpp
   tests/unit/arm64_emitter_test.cpp
   tests/unit/compiler_stack_test.cpp
+  tests/unit/engine_tree_test.cpp
   tests/unit/lexer_test.cpp
   tests/unit/runtime_heap_test.cpp
   tests/unit/parser_test.cpp
@@ -97,7 +102,7 @@ target_include_directories(rung_unit_tests SYSTEM PRIVATE third_party/doctest)
 if(RUNG_HAS_JIT_MEMORY)
   target_sources(rung_unit_tests PRIVATE tests/unit/exec_memory_test.cpp)
 endif()
-target_link_libraries(rung_unit_tests PRIVATE rung_core rung_warnings)
+target_link_libraries(rung_unit_tests PRIVATE rung_core rung_warnings Threads::Threads)
 
 # TEMPORARY, tsan only: the parser's "nesting limit" test parses a 5000-term flat expression,
 # whose left-nested AST is destroyed recursively (a few native stack frames per term).
@@ -125,4 +130,24 @@ if(RUNG_FUZZ)
     list(APPEND RUNG_FUZZ_SEEDS ${CMAKE_SOURCE_DIR}/tests/conformance)
   endif()
   add_test(NAME fuzz_seed_replay COMMAND rung_fuzz_frontend -runs=0 ${RUNG_FUZZ_SEEDS})
+endif()
+
+# Conformance suite (notes D13): one ctest entry per engine, plus a run with the collector
+# forced to run on every allocation, which is what finds a value the GC cannot see (notes D10).
+# The generous per-test timeout is for --gc-stress under the sanitizers.
+#
+# Not registered in the tsan preset: the suite's 10,000-deep recursion tests need a native stack
+# of 100 MB or more, and ThreadSanitizer on macOS faults after about 90 MB of any big thread
+# stack, whatever size was requested. The tree-walker is single-threaded, so ThreadSanitizer has
+# nothing to check in it; the tsan job exists for the JIT's threads (notes D8).
+if(NOT RUNG_SANITIZE STREQUAL "thread")
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  foreach(engine tree)
+    add_test(NAME conformance-${engine}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+              --rung $<TARGET_FILE:rung> --engine ${engine} --timeout 120)
+    add_test(NAME conformance-${engine}-gc-stress
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+              --rung $<TARGET_FILE:rung> --engine ${engine} --gc-stress --timeout 300)
+  endforeach()
 endif()
