@@ -53,6 +53,7 @@ endif()
 
 # Everything except main(), so tests link the same code the CLI runs.
 add_library(rung_core STATIC
+  src/ast.cpp
   src/ast_dump.cpp
   src/bytecode/chunk.cpp
   src/compiler_stack.cpp
@@ -99,17 +100,7 @@ if(RUNG_HAS_JIT_MEMORY)
 endif()
 target_link_libraries(rung_unit_tests PRIVATE rung_core rung_warnings)
 
-# TEMPORARY, tsan only: the parser's "nesting limit" test parses a 5000-term flat expression,
-# whose left-nested AST is destroyed recursively (a few native stack frames per term).
-# ThreadSanitizer's much larger frames overflow the stack somewhere between 4000 and 5000 terms
-# and the sanitizer aborts. This is a parser/AST robustness problem, not a JIT one; the test
-# still runs in debug/release/asan. Remove this exclusion when the AST is destroyed without deep
-# recursion.
-set(RUNG_UNIT_TEST_ARGS)
-if(RUNG_SANITIZE STREQUAL "thread")
-  list(APPEND RUNG_UNIT_TEST_ARGS "--test-case-exclude=nesting limit")
-endif()
-add_test(NAME unit COMMAND rung_unit_tests ${RUNG_UNIT_TEST_ARGS})
+add_test(NAME unit COMMAND rung_unit_tests)
 
 # Front-end fuzzer (issue #12). Run it with fuzz/run_fuzz.sh; see README, Testing.
 if(RUNG_FUZZ)

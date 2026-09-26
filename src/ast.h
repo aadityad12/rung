@@ -106,6 +106,13 @@ struct Expr {
                               ArrayLiteral, Index, IndexAssign>;
     Node node;
     Expr(Node n) : node(std::move(n)) {}  // implicit on purpose: make_unique<Expr>(Literal{...})
+
+    // Destroys a chain such as `1 + 1 + ... + 1` without native recursion. The nesting limit
+    // (notes §2.6) does not bound such chains, because they are not syntactic nesting, and the
+    // default destructor would use a few stack frames per link. Defined in ast.cpp.
+    ~Expr();
+    Expr(const Expr&) = delete;
+    Expr& operator=(const Expr&) = delete;
 };
 
 // ---- Statements ----
