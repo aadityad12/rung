@@ -287,3 +287,35 @@ TEST_CASE("nesting limit") {
     CHECK(error_of("print 1" + repeat(" + 1", 5000) + ";") == "no error");
     CHECK(error_of("f" + repeat("(1)", 5000) + ";") == "no error");
 }
+
+// A chain is not syntactic nesting, so the nesting limit lets it grow without bound (notes §2.6).
+// Building, dumping, and destroying it must not use native stack per link. The length is far past
+// what an ordinary or ThreadSanitizer stack survives with one recursive frame set per link.
+TEST_CASE("very long flat chains") {
+    const int n = 100000;
+    struct Case {
+        std::string source;
+        std::string head;  // dump prefix that the chain's outermost nodes produce
+    };
+    const Case cases[] = {
+        {"print 1" + repeat(" + 1", n) + ";", "(print " + repeat("(+ ", n) + "1"},
+        {"print 1" + repeat(" and 1", n) + ";", "(print " + repeat("(and ", n) + "1"},
+        {"f" + repeat("(1)", n) + ";", "(expr " + repeat("(call ", n) + "f"},
+        {"a" + repeat("[0]", n) + ";", "(expr " + repeat("(index ", n) + "a"},
+        {"a" + repeat("[0]", n) + " = 1;", "(expr (set-index " + repeat("(index ", n - 1) + "a"},
+    };
+    for (const Case& c : cases) {
+        rung::ParseResult result = parse(c.source);
+        REQUIRE(result.ok());
+        std::string out = rung::dump_ast(*result.program);
+        CHECK(out.compare(0, c.head.size(), c.head) == 0);
+        // Leaving this scope destroys the whole tree.
+    }
+}
+
+TEST_CASE("chain dump keeps the shape of small chains") {
+    CHECK(dump("print 1 + 2 - 3;") == "(print (- (+ 1 2) 3))");
+    CHECK(dump("a[0](1, 2)[3] = 4;") == "(expr (set-index (call (index a 0) 1 2) 3 4))");
+    CHECK(dump("f(1)(2)(3);") == "(expr (call (call (call f 1) 2) 3))");
+    CHECK(dump("a or b and c or d;") == "(expr (or (or a (and b c)) d))");
+}
