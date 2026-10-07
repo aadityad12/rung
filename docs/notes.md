@@ -1298,7 +1298,10 @@ How D5's noise control became code, and the choices D5 left open:
 
 - **Baseline JIT (issue #23): no crash was hit while building it.** The direct tests of the
   generated code (`tests/unit/jit_test.cpp`) and the conformance suite passed under ASan + UBSan
-  from their first run; the only failure was a wrong expected value in a new unit test.
+  from their first run. The only failures were in the tests themselves: a wrong expected value
+  in a new unit test, and a conformance test (`jit/loop_sum.rg`) first sized at 100,000
+  iterations, which the tree-walker could not finish within the runner's timeout under ASan
+  (it now loops 10,000 times).
 
 - **Intermittent SEGV calling freshly written code, Linux arm64, asan preset only (about 5% of
   runs).** First suspected the instruction cache. It was not: the same code with no flush at all
