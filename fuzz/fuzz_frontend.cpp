@@ -1,4 +1,4 @@
-// libFuzzer target for the front end: lexer, parser, resolver (issue #12).
+// libFuzzer target for the front end: lexer, parser, resolver, and the folding pass (issue #12).
 //
 // It deliberately stops before execution. Rung programs may loop forever (`while (true) {}` is
 // legal), so running a fuzz input would "hang" on valid programs and drown out real bugs. The
@@ -11,6 +11,7 @@
 
 #include "ast_dump.h"
 #include "diagnostic.h"
+#include "fold.h"
 #include "lexer.h"
 #include "parser.h"
 #include "resolver.h"
@@ -38,6 +39,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // Printing the resolved AST walks every node and reads every binding, so it doubles as a
     // check that the resolver left the tree fully annotated.
+    (void)rung::dump_ast(*parsed.program);
+
+    // Constant folding (ladder rung 3f) is a pure tree rewrite, so it can be fuzzed without
+    // running anything: it must terminate and leave a tree the dumper can still walk.
+    (void)rung::fold(*parsed.program);
     (void)rung::dump_ast(*parsed.program);
     return 0;
 }

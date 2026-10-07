@@ -18,6 +18,7 @@ python3 tests/run_conformance.py --rung build/debug/rung --engine tree numbers/ 
 | `--rung PATH` | the `rung` executable (required) |
 | `--engine NAME` | passed to rung as `--engine=NAME` (required) |
 | `--gc-stress` | passed to rung as `--gc-stress` (collect on every allocation) |
+| `--fold` | passed to rung as `--fold` (constant folding and dead-code removal, notes §5 rung 3f). The whole suite must pass with it. |
 | `--timeout SEC` | per-test limit, default 10. A test over the limit fails, so an infinite loop cannot hang CI. `--gc-stress` under a sanitizer is much slower, and the 10,000-deep recursion tests are the slowest, so raise this there. |
 | `--jobs N` | tests run in parallel, default the CPU count |
 | `--skip SUBSTRING` | do not run tests whose path contains it (repeatable). Skipped tests are listed as `SKIPPED` and counted in the last line, so nothing is skipped silently. CMake uses it only for the deep-recursion tests under `--gc-stress` in the ASan preset (see `CMakeLists.txt`). |
@@ -86,6 +87,7 @@ Rules that keep tests honest:
 | `arrays/` | literals, `array(n, fill)`, aliasing, nesting, `len` |
 | `strings/` | concatenation, equality, escapes, multi-line strings |
 | `globals/` | redeclaration, undefined reads and assignments |
+| `folding/` | what `--fold` could get wrong: wraparound and IEEE results computed at compile time, constant operations that must still fail at run time on their line, `and`/`or`/`!` on constants, code after `return`, `if`/`while` on constants, scoping around removed code. They are ordinary programs and pass without `--fold` too. |
 | `programs/` | a few small whole programs (sieve, sort, linked list) that stress the collector |
 
 A few tests are generated (a 255-parameter function, 200 nested blocks) because writing them by
