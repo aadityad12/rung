@@ -45,6 +45,7 @@ struct Options {
     bool gc_stress = false;
     bool want_stats = false;
     bool fold = false;
+    bool inline_cache = false;
     std::optional<std::size_t> bench_iterations;
     std::string bench_out;
     std::string engine = "tree";
@@ -58,10 +59,11 @@ void print_usage() {
         std::cerr << separator << name;
         separator = "|";
     }
-    std::cerr << "] [--gc-stress] [--stats] [--fold]\n"
+    std::cerr << "] [--gc-stress] [--stats] [--fold] [--inline-cache]\n"
                  "            [--dump-tokens | --dump-ast | --dump-bytecode]\n"
                  "            [--bench=N --bench-out=FILE] <file.rg>\n"
-                 "       --dump-bytecode also accepts --engine=stack|register\n";
+                 "       --dump-bytecode also accepts --engine=stack|register\n"
+                 "       --inline-cache needs --engine=register\n";
 }
 
 std::optional<std::string> read_file(const std::string& path) {
@@ -189,7 +191,10 @@ int execute(const Options& options) {
     rung::Heap heap;
     heap.set_stress(options.gc_stress);
     rung::Output out;
-    std::unique_ptr<rung::Engine> engine = rung::make_engine(options.engine, heap, out);
+    rung::EngineOptions engine_options;
+    engine_options.inline_cache = options.inline_cache;
+    std::unique_ptr<rung::Engine> engine =
+        rung::make_engine(options.engine, heap, out, engine_options);
 
     rung::EngineResult result = engine->run(*parsed.program);
 
@@ -280,6 +285,8 @@ int main(int argc, char** argv) {
             options.want_stats = true;
         } else if (arg == "--fold") {
             options.fold = true;
+        } else if (arg == "--inline-cache") {
+            options.inline_cache = true;
         } else if (arg.substr(0, kEnginePrefix.size()) == kEnginePrefix) {
             options.engine = std::string(arg.substr(kEnginePrefix.size()));
         } else if (arg.substr(0, kBenchPrefix.size()) == kBenchPrefix) {
@@ -317,6 +324,14 @@ int main(int argc, char** argv) {
     bool has_compiler = options.engine == "stack" || options.engine == "register";
     if (!runnable && !(options.want_bytecode && has_compiler)) {
         std::cerr << "rung: unknown engine '" << options.engine << "'\n";
+        print_usage();
+        return kExitUsage;
+    }
+
+    // Only the register VM has the rung. Refused, not ignored, so a flag on the command line
+    // always means what it says (the benchmark configurations rely on it).
+    if (options.inline_cache && options.engine != "register") {
+        std::cerr << "rung: --inline-cache needs --engine=register\n";
         print_usage();
         return kExitUsage;
     }
