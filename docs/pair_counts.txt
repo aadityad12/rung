@@ -1,0 +1,157 @@
+Opcode pairs dispatched back to back by the register VM, per benchmark (counts, not times).
+Produced by `python3 scripts/pair_counts.py` with a build that has the VM counters.
+Each run is `rung --engine=register --stats=pairs --bench=1 bench/NAME.rg`:
+the program's top level, then one call of run(). Only the 30 most frequent pairs of each
+benchmark are listed; the percentage is of all pairs dispatched in that run.
+
+== closures
+vm: 9600020 instructions dispatched, 900002 calls, 0 native calls
+pairs: 9600018 opcode pairs dispatched, 32 distinct
+  LT             -> JUMP_IF_FALSE        600002    6.3%
+  MOVE           -> MOVE                 600000    6.2%
+  MOVE           -> CALL                 600000    6.2%
+  GET_UPVALUE    -> ADD                  600000    6.2%
+  ADD            -> MOD                  600000    6.2%
+  ADD            -> JUMP                 600000    6.2%
+  MOD            -> ADD                  600000    6.2%
+  JUMP           -> LT                   600000    6.2%
+  CALL           -> GET_UPVALUE          600000    6.2%
+  RETURN         -> ADD                  600000    6.2%
+  JUMP_IF_FALSE  -> GET_GLOBAL           300001    3.1%
+  CLOSURE        -> RETURN               300001    3.1%
+  MOVE           -> LOADK                300000    3.1%
+  LOADK          -> CALL                 300000    3.1%
+  GET_GLOBAL     -> MOVE                 300000    3.1%
+  GET_UPVALUE    -> RETURN               300000    3.1%
+  SET_UPVALUE    -> GET_UPVALUE          300000    3.1%
+  ADD            -> SET_UPVALUE          300000    3.1%
+  ADD            -> RETURN               300000    3.1%
+  JUMP_IF_FALSE  -> MOVE                 300000    3.1%
+  CALL           -> CLOSURE              300000    3.1%
+  RETURN         -> MOVE                 300000    3.1%
+  CLOSURE        -> DEFINE_GLOBAL             3    0.0%
+  LOADK          -> LT                        2    0.0%
+  DEFINE_GLOBAL  -> CLOSURE                   2    0.0%
+  LOADK          -> LOADK                     1    0.0%
+  LOADK          -> CLOSURE                   1    0.0%
+  GET_GLOBAL     -> CALL                      1    0.0%
+  DEFINE_GLOBAL  -> RETURN_NIL                1    0.0%
+  JUMP_IF_FALSE  -> RETURN                    1    0.0%
+
+== fib
+vm: 4131542 instructions dispatched, 635622 calls, 0 native calls
+pairs: 4131540 opcode pairs dispatched, 15 distinct
+  LT             -> JUMP_IF_FALSE        635621   15.4%
+  CALL           -> LT                   635621   15.4%
+  GET_GLOBAL     -> SUB                  635620   15.4%
+  SUB            -> CALL                 635620   15.4%
+  JUMP_IF_FALSE  -> RETURN               317811    7.7%
+  ADD            -> RETURN               317810    7.7%
+  JUMP_IF_FALSE  -> GET_GLOBAL           317810    7.7%
+  RETURN         -> GET_GLOBAL           317810    7.7%
+  RETURN         -> ADD                  317810    7.7%
+  CLOSURE        -> DEFINE_GLOBAL             2    0.0%
+  LOADK          -> CALL                      1    0.0%
+  GET_GLOBAL     -> LOADK                     1    0.0%
+  DEFINE_GLOBAL  -> CLOSURE                   1    0.0%
+  DEFINE_GLOBAL  -> RETURN_NIL                1    0.0%
+  RETURN         -> RETURN                    1    0.0%
+
+== loop_sum
+vm: 14000008 instructions dispatched, 1 calls, 0 native calls
+pairs: 14000006 opcode pairs dispatched, 11 distinct
+  MOD            -> ADD                 4000000   28.6%
+  LT             -> JUMP_IF_FALSE       2000001   14.3%
+  ADD            -> MOD                 2000000   14.3%
+  ADD            -> JUMP                2000000   14.3%
+  JUMP           -> LT                  2000000   14.3%
+  JUMP_IF_FALSE  -> MOD                 2000000   14.3%
+  LOADK          -> LOADK                     1    0.0%
+  LOADK          -> LT                        1    0.0%
+  DEFINE_GLOBAL  -> RETURN_NIL                1    0.0%
+  JUMP_IF_FALSE  -> RETURN                    1    0.0%
+  CLOSURE        -> DEFINE_GLOBAL             1    0.0%
+
+== nbody
+vm: 8491383 instructions dispatched, 55013 calls, 5001 native calls
+pairs: 8491381 opcode pairs dispatched, 77 distinct
+  DIV            -> ADD                 1200240   14.1%
+  LT             -> JUMP_IF_FALSE        790152    9.3%
+  ADD            -> JUMP                 705135    8.3%
+  JUMP           -> LT                   705135    8.3%
+  JUMP_IF_FALSE  -> DIV                  650130    7.7%
+  ADD            -> DIV                  600120    7.1%
+  INDEX_GET      -> INDEX_GET            600070    7.1%
+  INDEX_GET      -> MUL                  375030    4.4%
+  MUL            -> MUL                  350020    4.1%
+  MUL            -> ADD                  325035    3.8%
+  INDEX_SET      -> INDEX_GET            300000    3.5%
+  ADD            -> INDEX_SET            225000    2.6%
+  INDEX_GET      -> SUB                  150030    1.8%
+  SUB            -> INDEX_SET            150000    1.8%
+  MUL            -> SUB                  150000    1.8%
+  SUB            -> INDEX_GET            100020    1.2%
+  JUMP_IF_FALSE  -> INDEX_GET            100015    1.2%
+  INDEX_SET      -> ADD                   75000    0.9%
+  LOADK          -> LT                    60012    0.7%
+  GET_GLOBAL     -> MOVE                  60002    0.7%
+  MOVE           -> CALL                  55002    0.6%
+  ADD            -> MUL                   50015    0.6%
+  JUMP_IF_FALSE  -> RETURN                50011    0.6%
+  MOVE           -> GT                    50010    0.6%
+  DIV            -> LOADK                 50010    0.6%
+  GT             -> JUMP_IF_FALSE         50010    0.6%
+  CALL           -> MOVE                  50010    0.6%
+  MOVE           -> MOVE                  50000    0.6%
+  MOVE           -> GET_GLOBAL            50000    0.6%
+  ADD            -> MOVE                  50000    0.6%
+
+== sieve
+vm: 9902205 instructions dispatched, 1 calls, 1 native calls
+pairs: 9902203 opcode pairs dispatched, 26 distinct
+  LE             -> JUMP_IF_FALSE       1850365   18.7%
+  ADD            -> JUMP                1850226   18.7%
+  JUMP           -> LE                  1849453   18.7%
+  JUMP_IF_FALSE  -> INDEX_SET           1249452   12.6%
+  INDEX_SET      -> ADD                 1249452   12.6%
+  JUMP_IF_FALSE  -> ADD                  600774    6.1%
+  JUMP_IF_FALSE  -> INDEX_GET            600774    6.1%
+  INDEX_GET      -> JUMP_IF_FALSE        600774    6.1%
+  ADD            -> ADD                   49098    0.5%
+  MUL            -> LE                      911    0.0%
+  JUMP           -> MUL                     773    0.0%
+  JUMP_IF_FALSE  -> MUL                     137    0.0%
+  LOADK          -> LOADK                     1    0.0%
+  LOADK          -> GET_GLOBAL                1    0.0%
+  LOADK          -> MUL                       1    0.0%
+  LOADK          -> LE                        1    0.0%
+  LOADTRUE       -> CALL                      1    0.0%
+  GET_GLOBAL     -> ADD                       1    0.0%
+  DEFINE_GLOBAL  -> RETURN_NIL                1    0.0%
+  ADD            -> LOADTRUE                  1    0.0%
+  JUMP_IF_FALSE  -> LOADK                     1    0.0%
+  JUMP_IF_FALSE  -> RETURN                    1    0.0%
+  CALL           -> INDEX_SET                 1    0.0%
+  CLOSURE        -> DEFINE_GLOBAL             1    0.0%
+  INDEX_SET      -> LOADK                     1    0.0%
+  INDEX_SET      -> INDEX_SET                 1    0.0%
+
+== strcat
+vm: 1910017 instructions dispatched, 1 calls, 30001 native calls
+pairs: 1910015 opcode pairs dispatched, 16 distinct
+  LT             -> JUMP_IF_FALSE        364002   19.1%
+  ADD            -> ADD                  334000   17.5%
+  ADD            -> JUMP                 334000   17.5%
+  JUMP           -> LT                   334000   17.5%
+  JUMP_IF_FALSE  -> ADD                  304000   15.9%
+  LOADK          -> LOADK                 30002    1.6%
+  LOADK          -> LT                    30002    1.6%
+  MOVE           -> GET_GLOBAL            30001    1.6%
+  MOVE           -> CALL                  30001    1.6%
+  GET_GLOBAL     -> MOVE                  30001    1.6%
+  JUMP_IF_FALSE  -> MOVE                  30001    1.6%
+  JUMP_IF_FALSE  -> LOADK                 30001    1.6%
+  CALL           -> ADD                   30001    1.6%
+  DEFINE_GLOBAL  -> RETURN_NIL                1    0.0%
+  ADD            -> RETURN                    1    0.0%
+  CLOSURE        -> DEFINE_GLOBAL             1    0.0%

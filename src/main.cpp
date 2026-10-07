@@ -44,8 +44,10 @@ struct Options {
     bool want_bytecode = false;
     bool gc_stress = false;
     bool want_stats = false;
+    bool want_pairs = false;  // --stats=pairs: --stats plus the opcode-pair table
     bool fold = false;
     bool inline_cache = false;
+    bool superinstructions = false;
     std::optional<std::size_t> bench_iterations;
     std::string bench_out;
     std::string engine = "tree";
@@ -59,11 +61,12 @@ void print_usage() {
         std::cerr << separator << name;
         separator = "|";
     }
-    std::cerr << "] [--gc-stress] [--stats] [--fold] [--inline-cache]\n"
+    std::cerr << "] [--gc-stress] [--stats[=pairs]] [--fold] [--inline-cache]\n"
+                 "            [--superinstructions]\n"
                  "            [--dump-tokens | --dump-ast | --dump-bytecode]\n"
                  "            [--bench=N --bench-out=FILE] <file.rg>\n"
                  "       --dump-bytecode also accepts --engine=stack|register\n"
-                 "       --inline-cache needs --engine=register\n";
+                 "       --inline-cache and --superinstructions need --engine=register\n";
 }
 
 std::optional<std::string> read_file(const std::string& path) {
@@ -109,11 +112,14 @@ int run_bench_mode(const Options& options, rung::Engine& engine, const rung::Hea
 
 // The code size of the program the bytecode engines would run, for --stats (notes §5, rung 3f).
 // Compiled again on a scratch heap, so the engine's own run is not touched; only --stats pays.
-void print_bytecode_size(const rung::Program& program, const std::string& engine) {
+void print_bytecode_size(const rung::Program& program, const std::string& engine,
+                         bool superinstructions) {
     rung::Heap heap;
     rung::BytecodeSize size;
     if (engine == "register") {
-        rung::RegCompileResult compiled = rung::compile_register(program, heap);
+        rung::RegCompileOptions compile_options;
+        compile_options.superinstructions = superinstructions;
+        rung::RegCompileResult compiled = rung::compile_register(program, heap, compile_options);
         if (!compiled.ok()) return;
         size = rung::register_bytecode_size(*compiled.function);
     } else if (engine == "stack") {
@@ -169,7 +175,10 @@ int execute(const Options& options) {
     if (options.want_bytecode) {
         rung::Heap heap;
         if (options.engine == "register") {
-            rung::RegCompileResult compiled = rung::compile_register(*parsed.program, heap);
+            rung::RegCompileOptions compile_options;
+            compile_options.superinstructions = options.superinstructions;
+            rung::RegCompileResult compiled =
+                rung::compile_register(*parsed.program, heap, compile_options);
             if (!compiled.ok()) {
                 std::cerr << rung::format_error(*compiled.error) << "\n";
                 return kExitCompileError;
@@ -193,6 +202,7 @@ int execute(const Options& options) {
     rung::Output out;
     rung::EngineOptions engine_options;
     engine_options.inline_cache = options.inline_cache;
+    engine_options.superinstructions = options.superinstructions;
     std::unique_ptr<rung::Engine> engine =
         rung::make_engine(options.engine, heap, out, engine_options);
 
@@ -216,9 +226,10 @@ int execute(const Options& options) {
             std::cerr << "fold: " << fold_stats.expressions_folded << " expressions folded, "
                       << fold_stats.statements_removed << " statements removed\n";
         }
-        print_bytecode_size(*parsed.program, options.engine);
+        print_bytecode_size(*parsed.program, options.engine, options.superinstructions);
         print_stats(heap);
         std::cerr << engine->stats_report();
+        if (options.want_pairs) std::cerr << engine->pair_report();
     }
     return exit_code;
 }
@@ -283,10 +294,15 @@ int main(int argc, char** argv) {
             options.gc_stress = true;
         } else if (arg == "--stats") {
             options.want_stats = true;
+        } else if (arg == "--stats=pairs") {
+            options.want_stats = true;
+            options.want_pairs = true;
         } else if (arg == "--fold") {
             options.fold = true;
         } else if (arg == "--inline-cache") {
             options.inline_cache = true;
+        } else if (arg == "--superinstructions") {
+            options.superinstructions = true;
         } else if (arg.substr(0, kEnginePrefix.size()) == kEnginePrefix) {
             options.engine = std::string(arg.substr(kEnginePrefix.size()));
         } else if (arg.substr(0, kBenchPrefix.size()) == kBenchPrefix) {
@@ -332,6 +348,11 @@ int main(int argc, char** argv) {
     // always means what it says (the benchmark configurations rely on it).
     if (options.inline_cache && options.engine != "register") {
         std::cerr << "rung: --inline-cache needs --engine=register\n";
+        print_usage();
+        return kExitUsage;
+    }
+    if (options.superinstructions && options.engine != "register") {
+        std::cerr << "rung: --superinstructions needs --engine=register\n";
         print_usage();
         return kExitUsage;
     }

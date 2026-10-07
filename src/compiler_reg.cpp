@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "bytecode/register_code.h"
+#include "superinstructions.h"
 
 // Single-pass AST -> register bytecode compiler (notes D14). Scope tracking, upvalue resolution
 // and jump patching are the same as compiler_stack.cpp (clox, Crafting Interpreters ch. 22, 23
@@ -30,7 +31,11 @@ namespace {
 
 class Compiler {
 public:
-    explicit Compiler(Heap& heap) : heap_(heap) {}
+    Compiler(Heap& heap, bool superinstructions)
+        : heap_(heap), superinstructions_(superinstructions) {}
+
+    // Pairs fused so far (ladder rung 3d); 0 unless superinstructions are on.
+    std::size_t fused_pairs() const { return fused_pairs_; }
 
     // Throws CompileError only for functions too large for the operand widths.
     ObjFunction* compile_script(const Program& program);
@@ -678,6 +683,7 @@ private:
         emit_abc(RegOp::ReturnNil, 0, 0, 0, fn.line);  // falling off the end returns nil
 
         ObjFunction* done = state.function;
+        finish_function(done->reg);
         done->upvalue_count = static_cast<int>(state.upvalues.size());
         current_ = state.enclosing;
         // `done` is rooted by nothing here, but nothing allocates until it is in the constants.
@@ -690,7 +696,16 @@ private:
         }
     }
 
+    // The function's code is complete: fuse adjacent pairs if asked to (rung 3d). Fusion is a
+    // pass over finished code, not part of emission, so the code the compiler writes is the same
+    // with and without the flag and the pass can be tested on its own.
+    void finish_function(RegChunk& code) {
+        if (superinstructions_) fused_pairs_ += fuse_superinstructions(code);
+    }
+
     Heap& heap_;
+    bool superinstructions_;
+    std::size_t fused_pairs_ = 0;
     FunctionState* current_ = nullptr;
 };
 
@@ -716,17 +731,20 @@ ObjFunction* Compiler::compile_script(const Program& program) {
     // The last token is Eof, whose line is where falling off the end "happens".
     int end_line = program.tokens.empty() ? 1 : program.tokens.back().line;
     emit_abc(RegOp::ReturnNil, 0, 0, 0, end_line);
+    finish_function(state.function->reg);
     current_ = nullptr;
     return state.function;
 }
 
-RegCompileResult compile_register(const Program& program, Heap& heap) {
-    Compiler compiler(heap);
+RegCompileResult compile_register(const Program& program, Heap& heap,
+                                  RegCompileOptions options) {
+    Compiler compiler(heap, options.superinstructions);
     RootMarkerGuard guard(
         heap, heap.add_root_marker([&compiler](Heap& h) { compiler.mark_roots(h); }));
     RegCompileResult result;
     try {
         result.function = compiler.compile_script(program);
+        result.fused_pairs = compiler.fused_pairs();
     } catch (const CompileError& error) {
         result.error = error;
     }
