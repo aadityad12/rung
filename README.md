@@ -12,8 +12,8 @@ every speedup measured on its own:
 
 The name comes from the results table: each row is one rung of the ladder.
 
-> **Status: under construction.** The tree-walking interpreter and the stack VM run Rung
-> programs and pass the conformance suite. The other engines are not built yet. Every number
+> **Status: under construction.** The tree-walking interpreter, the stack VM and the register
+> VM run Rung programs and pass the conformance suite. The other engines are not built yet. Every number
 > that ends up in this README will come from a committed file in `results/` produced by a
 > script. None are hand-written.
 
@@ -47,6 +47,7 @@ cmake --build --preset debug
 ctest --preset debug
 ./build/debug/rung examples/hello.rg          # runs on the tree-walker (--engine=tree)
 ./build/debug/rung --engine=stack --stats examples/hello.rg   # stack VM; debug builds also count instructions
+./build/debug/rung --engine=register --stats examples/hello.rg   # register VM, same counters
 ./build/debug/rung --gc-stress --stats examples/hello.rg   # collect on every allocation; heap stats
 ./build/debug/rung --dump-tokens examples/hello.rg
 ./build/debug/rung --dump-ast examples/hello.rg
@@ -69,10 +70,12 @@ Five layers, each catching something the others cannot:
    [FILTER...]`; the format and how to add a test are in
    [`tests/conformance/README.md`](tests/conformance/README.md). `ctest` runs it once per
    engine, and once more per engine with `--gc-stress` (`conformance-tree`,
-   `conformance-tree-gc-stress`, `conformance-stack`, `conformance-stack-gc-stress`).
+   `conformance-tree-gc-stress`, `conformance-stack`, `conformance-stack-gc-stress`,
+   `conformance-register`, `conformance-register-gc-stress`).
 2. **Unit tests** (`tests/unit/`, [doctest](https://github.com/doctest/doctest)). Each C++
-   module on its own: the lexer, parser, resolver, runtime and GC, the tree-walker, the stack VM, and the
-   ARM64 encoder (checked byte for byte against LLVM). `ctest --preset debug` runs them.
+   module on its own: the lexer, parser, resolver, runtime and GC, the tree-walker, both
+   compilers and both VMs, and the ARM64 encoder (checked byte for byte against LLVM).
+   `ctest --preset debug` runs them.
 3. **Sanitizers.** The `asan` preset builds everything with AddressSanitizer and
    UndefinedBehaviorSanitizer, and `tsan` with ThreadSanitizer (for the background JIT thread).
    Warnings are errors. Run `asan` before every PR.

@@ -757,6 +757,76 @@ crash and its cause.
   `ladder_configs.json`), which is not in the repository yet, and an exclusive machine (D5).
   Expected versus measured, value-stack bytes and peak RSS are to be filled in here then.
 
+### Ladder rung 3c: register VM
+
+- **What changed.** `--engine=register` runs the register bytecode of D14 (`src/vm_reg.cpp`).
+  It uses the same dispatch macros as the stack VM (`src/vm/dispatch.h` now takes the opcode
+  enum and its list from the VM that includes it), the same `Value` interface, and the same
+  `src/runtime/` operations, so computed goto and NaN-boxing apply to it unchanged. Every unit
+  test and the whole conformance suite pass on it, with and without `--gc-stress`, in `debug`,
+  `asan`, `asan-goto` and `asan-goto-nanbox`.
+- **The register window** (Lua 5.0, section 7). There is one register file for the whole run.
+  A frame is a window into it: register `r` of the running function is the slot `base + r`. For
+  `CALL A B` the callee is in register `A` and its arguments in `A+1..A+B`, so the callee's
+  window starts at `base + A + 1` and its parameters are already in its registers `0..B-1`:
+  nothing is copied. `RETURN` writes the result to `base[-1]` of the returning window, which is
+  the caller's register `A`. This keeps every register in memory at `base + index`, which is
+  what the JIT will read and write (D3); `RegChunk::line_at` maps an instruction index to its
+  source line for error reporting and, later, bail-outs.
+- **Details chosen while implementing** (open to review):
+  - *The register file never moves*, for the same reason as the stack VM's value stack: open
+    upvalues are raw pointers to registers. It is reserved once at the stack VM's size
+    (6,754,304 slots, uninitialised, so pages are touched only as frames reach them). The
+    register VM knows each callee's exact window size (`frame_size`), so a call checks that the
+    whole window fits and needs no slack for temporaries. Running out before the 10,000-frame
+    limit takes windows that start, on average, more than 675 registers above their caller's.
+  - *A call sets the callee's registers above its arguments to nil* before the frame runs (Lua
+    5.0's `luaD_precall` does the same). Without it the collector would have to know which
+    registers are initialised: a returned callee leaves stale values above its caller's window,
+    and the collector frees what they point at once they are no longer marked, so marking a
+    stale register later would read a freed object. With it, the collector marks one
+    contiguous run from slot 0 to the highest end of any live window, every slot of which is
+    a valid value. The cost is `frame_size - arity` stores per call.
+  - *The entry callee sits in slot 0.* The script's closure (or the function `call_global`
+    calls) is put in slot 0 and the entry frame's window starts at slot 1, so every frame has
+    a `base[-1]` and calls need no special case.
+  - *An error never unwinds C++ frames*: the loop returns `false` like the stack VM, and the
+    engine closes every open upvalue and empties the frame stack.
+- **Expected.** Fewer instructions dispatched for the same work, because a register instruction
+  names its operands where the stack VM pushes them first: `GET_LOCAL`, `CONST`, `POP` and most
+  `SET_LOCAL`s disappear. Each remaining instruction does more decoding (a 64-bit word, a flag
+  test per RK operand), so time per instruction rises somewhat. Spec §5.5 expects this to be the
+  largest single win of the ladder; that is to be measured, not assumed.
+- **Instructions dispatched, both VMs** (exact counts from the VM counters, D5: the `debug`
+  build, `rung --engine=stack|register --stats FILE`; these are counts, not timings). The
+  benchmarks do not exist yet, so the programs are conformance tests:
+
+  | Program (`tests/conformance/`) | Stack VM | Register VM | Register / stack |
+  |---|---|---|---|
+  | `functions/recursion_fibonacci.rg` | 264,840 | 143,460 | 0.54 |
+  | `programs/sieve_of_eratosthenes.rg` | 1,632 | 798 | 0.49 |
+  | `programs/bubble_sort.rg` | 895 | 372 | 0.42 |
+  | `programs/gcd_and_collatz.rg` | 2,843 | 1,064 | 0.37 |
+  | `programs/string_building_stress.rg` | 5,138 | 2,325 | 0.45 |
+  | `programs/linked_list_in_arrays.rg` | 182 | 111 | 0.61 |
+  | `closures/accumulator_generator.rg` | 44 | 34 | 0.77 |
+
+  Calls are identical in both (22,070 for the Fibonacci test). Where the drop comes from, for
+  the Fibonacci test: of the 121,380 instructions saved, 55,173 are `GET_LOCAL`, 44,136 are
+  `CONST` (the register VM still dispatches 4 `LOADK`s; every other constant is an operand),
+  22,070 are `POP` and 1 is `NIL`. The instructions that do the work (`LT`, `JUMP_IF_FALSE`,
+  `SUB`, `ADD`, `GET_GLOBAL`, `CALL`, and the returns) are dispatched exactly as often in both.
+  So the register VM removes data movement, not work: `fib` compiles to 12 instructions instead
+  of 23.
+  Programs dominated by arithmetic on locals (`gcd_and_collatz`) lose the most; ones dominated
+  by calls and closures (`accumulator_generator`) the least, since a call still costs a
+  `GET_GLOBAL` or `GET_UPVALUE`, argument moves and the `CALL` itself.
+- **Measured.** Not yet. Row `05_register` (`release-goto-nanbox`, `--engine=register`) needs the
+  benchmark harness (`scripts/bench.py`), which is not in the repository yet, and an exclusive
+  machine (D5). The time per benchmark, the instructions dispatched per benchmark for both VMs,
+  and the explanation of any difference from the expectation are to be filled in here then. If
+  the register VM turns out slower, count instructions per benchmark before profiling (spec §13).
+
 ### JIT crashes and their causes
 
 - **Intermittent SEGV calling freshly written code, Linux arm64, asan preset only (about 5% of
