@@ -1,22 +1,63 @@
 #pragma once
 
-// Instruction dispatch for the bytecode VMs, behind macros so ladder rung 3a (computed goto) can
-// swap the implementation without touching a VM's loop body (notes D4). The loop body uses
-// only these four macros and never writes `switch` or `case` itself.
+#include <cstdint>
+
+#ifndef RUNG_COMPUTED_GOTO
+#define RUNG_COMPUTED_GOTO 0
+#endif
+
+// Instruction dispatch for the bytecode VMs, behind macros so the loop body is the same for both
+// implementations (notes D4). The loop body uses only these macros and never writes `switch`,
+// `case` or `goto` itself.
 //
-//   RUNG_DISPATCH(fetch)   starts the loop; `fetch` is an expression that reads the next opcode
+//   RUNG_FETCH()           defined by the VM before RUNG_DISPATCH: an expression that reads the
+//                          next opcode (and advances the instruction pointer)
+//   RUNG_DISPATCH()        starts the loop and dispatches the first instruction
 //   RUNG_CASE(op)          the code of one opcode (the argument is an OpCode enumerator name)
 //   RUNG_NEXT()            finish this instruction and dispatch the next one
 //   RUNG_END_DISPATCH()    closes the loop opened by RUNG_DISPATCH
 //
-// This is the `switch` implementation: one shared indirect jump at the top of the loop. Computed
-// goto replaces it with a jump at the end of every instruction, which gives the CPU's branch
-// predictor one history per opcode instead of one for all of them.
-#define RUNG_DISPATCH(fetch) \
-    for (;;) {               \
-        switch (fetch) {
+// Two implementations, chosen by the CMake option RUNG_COMPUTED_GOTO (ladder rung 3a):
+//
+// * switch (default): one shared indirect jump at the top of the loop. Every instruction ends by
+//   jumping back to it, so the CPU's branch predictor sees one jump whose target depends on the
+//   whole opcode stream.
+// * computed goto: a table of label addresses indexed by opcode, and every handler ends with its
+//   own `goto *table[next opcode]`. That is one indirect jump per handler, so the predictor keeps
+//   a separate history for "what follows a GetLocal", "what follows an Add", and so on.
+//   Labels-as-values are a GNU extension that clang supports.
+
+// Every opcode, in the same order as the OpCode enum in bytecode/chunk.h (a static_assert in
+// the VM checks the count). Only the computed-goto table needs it.
+#define RUNG_OPCODE_LIST(X)                                                                    \
+    X(Const) X(Nil) X(True) X(False) X(Pop)                                                    \
+    X(GetLocal) X(SetLocal) X(GetGlobal) X(SetGlobal) X(DefineGlobal) X(GetUpvalue)            \
+    X(SetUpvalue)                                                                              \
+    X(Add) X(Sub) X(Mul) X(Div) X(Mod) X(Neg) X(Not)                                           \
+    X(Eq) X(Ne) X(Lt) X(Le) X(Gt) X(Ge)                                                        \
+    X(Jump) X(JumpIfFalse) X(Loop)                                                             \
+    X(Call) X(Closure) X(CloseUpvalue) X(Return)                                               \
+    X(Print) X(Array) X(IndexGet) X(IndexSet)
+
+#if RUNG_COMPUTED_GOTO
+
+#define RUNG_LABEL_ADDRESS_(op) &&rung_op_##op,
+#define RUNG_DISPATCH()                                                                        \
+    static const void* const rung_dispatch_table[] = {RUNG_OPCODE_LIST(RUNG_LABEL_ADDRESS_)};  \
+    RUNG_NEXT();
+#define RUNG_CASE(op) rung_op_##op:
+#define RUNG_NEXT() goto* rung_dispatch_table[static_cast<std::uint8_t>(RUNG_FETCH())]
+#define RUNG_END_DISPATCH() __builtin_unreachable();
+
+#else
+
+#define RUNG_DISPATCH()  \
+    for (;;) {           \
+        switch (RUNG_FETCH()) {
 #define RUNG_CASE(op) case OpCode::op:
 #define RUNG_NEXT() continue
 #define RUNG_END_DISPATCH() \
         }                   \
     }
+
+#endif

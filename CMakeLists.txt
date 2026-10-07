@@ -13,6 +13,10 @@ set(RUNG_SANITIZE "" CACHE STRING "Sanitizers to build with: empty, 'address,und
 # release build pays nothing. Debug-like presets turn it ON; release leaves it OFF.
 option(RUNG_VM_COUNTERS "Count instructions dispatched per opcode and calls in the VMs" OFF)
 
+# Computed-goto dispatch in the stack VM (ladder rung 3a, notes D4). OFF keeps the portable
+# `switch`. Labels-as-values are a GNU extension that clang supports on every platform we build.
+option(RUNG_COMPUTED_GOTO "Dispatch bytecode with computed goto instead of a switch" OFF)
+
 option(RUNG_FUZZ "Build the libFuzzer front-end target (needs a clang with libFuzzer)" OFF)
 
 if(RUNG_FUZZ AND RUNG_SANITIZE)
@@ -81,6 +85,13 @@ target_include_directories(rung_core PUBLIC src)
 if(RUNG_VM_COUNTERS)
   # PUBLIC: every translation unit that includes vm_stack.h must agree on the flag.
   target_compile_definitions(rung_core PUBLIC RUNG_VM_COUNTERS=1)
+endif()
+if(RUNG_COMPUTED_GOTO)
+  # Only the translation unit with the dispatch loop uses `&&label` and `goto *`, which -Wpedantic
+  # reports as -Wgnu-label-as-value. Everything else keeps the full warning set.
+  target_compile_definitions(rung_core PUBLIC RUNG_COMPUTED_GOTO=1)
+  set_source_files_properties(src/vm_stack.cpp PROPERTIES COMPILE_OPTIONS
+                              -Wno-gnu-label-as-value)
 endif()
 target_link_libraries(rung_core PRIVATE rung_warnings)
 
