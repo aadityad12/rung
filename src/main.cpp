@@ -142,7 +142,10 @@ int execute(const Options& options) {
         std::cerr << rung::format_runtime_error(*result.runtime_error) << "\n";
         exit_code = kExitRuntimeError;
     }
-    if (options.want_stats) print_stats(heap);
+    if (options.want_stats) {
+        print_stats(heap);
+        std::cerr << engine->stats_report();
+    }
     return exit_code;
 }
 

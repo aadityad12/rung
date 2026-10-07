@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -47,6 +48,10 @@ public:
     // Must come after run(). If `name` is not a callable global the error is an ordinary runtime
     // error, reported on line 0 because no Rung source line is involved.
     virtual CallResult call_global(std::string_view name) = 0;
+
+    // Engine-specific lines for `--stats`, printed to stderr after the heap statistics (notes
+    // D5). Empty for an engine with nothing to add.
+    virtual std::string stats_report() const { return {}; }
 };
 
 // Creates the engine called `name` ("tree", and later "stack", "register", "jit"), or null if
