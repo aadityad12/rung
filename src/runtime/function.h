@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "bytecode/chunk.h"
+#include "bytecode/register_code.h"
 #include "runtime/object.h"
 
 namespace rung {
@@ -13,11 +14,14 @@ namespace rung {
 
 // A compiled function: the prototype every closure of it shares. Immutable once the compiler
 // is done with it. The top-level program is one of these too, with no name and arity 0.
+// It carries the code of whichever compiler produced it: `chunk` from the stack compiler, or
+// `reg` from the register compiler (notes D14). The other one stays empty.
 struct ObjFunction : Obj {
     ObjString* name;  // null for the top-level script
     int arity = 0;
     int upvalue_count = 0;
     Chunk chunk;
+    RegChunk reg;
 
     explicit ObjFunction(ObjString* n) : Obj(ObjKind::Function), name(n) {}
 };

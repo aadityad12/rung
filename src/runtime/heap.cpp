@@ -74,6 +74,7 @@ void Heap::trace(Obj* obj) {
             auto* fn = static_cast<ObjFunction*>(obj);
             mark_object(fn->name);  // null for the script
             for (Value v : fn->chunk.constants) mark_value(v);
+            for (Value v : fn->reg.constants) mark_value(v);
             break;
         }
         case ObjKind::Closure: {

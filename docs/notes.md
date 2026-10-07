@@ -291,6 +291,78 @@ rung [--engine=tree|stack|register|jit] [--gc-stress] [--stats]
   prints a per-failure diff, and exits non-zero on any failure. CMake registers it as a ctest
   test once per engine that exists.
 
+### D14. Register bytecode: 64-bit instruction words. `DECIDED` (2026-09-25)
+
+The register VM (ladder rung 3c) and the JIT (D3) run this format. Its definition is in
+`src/bytecode/register_code.h`; the compiler is `src/compiler_reg.cpp`. The instruction
+words and the calling convention below were specified by the owner's issue; everything under
+*Details chosen while implementing* is the implementer's choice and is open to review.
+
+- **One instruction is one fixed 64-bit word:** `op` 8 bits, `A` 16, `B` 16, `C` 16, and 8
+  spare bits (used for flags, below). Jumps put a signed 32-bit offset in `B:C` (called `sBx`;
+  `B` is the low half), and instructions that name a constant or global by index use the same 32
+  bits (`Bx`).
+- **Why 16-bit operands, where Lua 5.0 has 32-bit words and 8-bit registers (255 registers):**
+  the resolver limits a function to 255 locals, parameters, and call arguments (D11) and the
+  nesting limit is 200 (§2.6), so a register count above 255 is reachable by ordinary programs
+  (a call at each of 200 nesting levels with 255 arguments needs about 51,000). With 8-bit
+  registers the compiler would have to reject some program the stack VM and the tree-walker
+  accept, which D11 forbids. Sixteen bits reach 65,535. The cost is a word twice as wide as
+  Lua's, so code is bigger and the instruction cache holds fewer of them. This is a trade made
+  for a uniform, easily decoded format (every field at a fixed bit position; no variable-length
+  or extra-argument words), and its cost is not yet measured. The frame size is computed per
+  function and checked: a function needing more than 65,535 registers is the compile error
+  `function too large`, which the resolver's limits and the nesting limit keep out of reach.
+- **Constants as operands ("RK").** Instructions whose `B` or `C` is a value (arithmetic,
+  comparison, `NEG`, `NOT`, index get/set, `PRINT`, `RETURN`) take either a register or a
+  constant. The flag bits in the spare byte say which (`kFlagBConst`, `kFlagCConst`), so a
+  constant index gets all 16 bits of its field. A constant whose index does not exceed 65,535
+  is an operand; any other is first loaded with `LOADK` (32-bit `Bx`) into a temporary. Chosen
+  over separate opcodes per operand shape because it keeps the opcode list short; each operand
+  fetch in the VM then tests a flag, which a later rung (superinstructions, D4 row 6) can
+  specialise. `nil`, `true`, `false`, ints, floats, and strings are all constants, and the
+  compiler stores each distinct one once per function.
+- **Calling convention (Lua 5.0).** Callee in register `A`, its arguments in `A+1 ... A+B`, the
+  result written back to register `A`. The callee's frame starts at register `A+1`, so its
+  parameters are its registers `0 ... arity-1` (there is no slot for the function itself as in
+  the stack VM). A function's `frame_size` is one more than the highest register it names,
+  including the callee and arguments of its own calls.
+- **Locals and temporaries.** A local variable lives in a fixed register for its whole scope: a
+  local's register is its position among the function's live locals, so leaving a scope frees
+  its registers without any instruction. Temporaries are allocated above the locals in stack
+  order and freed (the free pointer restored) when the expression that needed them ends.
+- **Instructions:** `MOVE LOADK LOADNIL LOADTRUE LOADFALSE GET_GLOBAL SET_GLOBAL DEFINE_GLOBAL
+  GET_UPVALUE SET_UPVALUE ADD SUB MUL DIV MOD EQ NE LT LE GT GE NEG NOT JUMP JUMP_IF_FALSE
+  JUMP_IF_TRUE CALL CLOSURE CAPTURE CLOSE RETURN RETURN_NIL PRINT ARRAY ARRAY_APPEND INDEX_GET
+  INDEX_SET`. Globals are still looked up by name (`Bx` is the constant index of the interned
+  name), so inline caching (rung 3e) still has something to remove. Comparisons produce a bool
+  in a register; there is no fused compare-and-jump yet (that is a superinstruction).
+
+**Details chosen while implementing.**
+- There is one `JUMP` for both directions (a loop is a negative offset), and offsets count
+  instructions from the one after the jump. `JUMP_IF_FALSE` / `JUMP_IF_TRUE` do not change their
+  register, so `and` / `or` keep the deciding operand's value (§2.2).
+- `CLOSURE A Bx` is followed by one `CAPTURE` word per upvalue (`A` = 1 for a register of the
+  enclosing frame, 0 for one of its upvalues; `B` = the index). They are operands of `CLOSURE`:
+  the VM reads them while creating the closure and skips them. `CLOSE A` closes every open
+  upvalue at or above register `A`; the compiler emits it at the end of a block that declared a
+  captured local (from the lowest captured one), and the VM's `RETURN` closes everything.
+- Array literals are built by `ARRAY A B C` (R[A] = the C values R[B..B+C-1], C at most 50) and,
+  for longer literals, further `ARRAY_APPEND A B C` batches. So an array of any length needs
+  only about 51 registers, where a single instruction naming every element would need one per
+  element (the stack VM's `ARRAY` count is 24 bits).
+- **Assignments are expressions in Rung, which Lua's are not**, so two hazards exist that Lua
+  does not have, and the compiler handles both: (1) reading a local in place as an operand
+  while a later operand of the same instruction assigns it (`a + (a = 5)`, or a call that
+  assigns a captured `a`): the earlier operand is copied first whenever a later one contains a
+  call or an assignment to a local. (2) building a value directly in a variable's register
+  when that expression still reads the variable (`a = (b + 1) and a`): a temporary is used and
+  moved once. **The VM must read all operands of an instruction before writing its result**
+  (`ADD a, a, 1` is legal), and, for `CALL`, must copy the result into `A` only after the call
+  finishes.
+- The register bytecode lives in `ObjFunction::reg` (a `RegChunk`); the stack VM's bytecode in
+  `ObjFunction::chunk`. A function has one or the other, and the GC marks both constant pools.
+
 ---
 
 ## 2. Semantics contract: rules every engine must follow exactly
