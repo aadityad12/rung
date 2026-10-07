@@ -2,8 +2,8 @@
 """Conformance runner: checks one Rung engine against tests/conformance/**/*.rg.
 
 Usage:
-    run_conformance.py --rung PATH --engine NAME [--gc-stress] [--timeout SEC] [--jobs N]
-                       [--skip SUBSTRING]... [FILTER...]
+    run_conformance.py --rung PATH --engine NAME [--gc-stress] [--fold] [--timeout SEC]
+                       [--jobs N] [--skip SUBSTRING]... [FILTER...]
 
 The expected behaviour of each test lives in comments inside the test file (docs/notes.md D13):
 
@@ -122,6 +122,8 @@ def run_one(args, name, path):
     command = [args.rung, "--engine=" + args.engine]
     if args.gc_stress:
         command.append("--gc-stress")
+    if args.fold:
+        command.append("--fold")
     command.append(path)
     try:
         done = subprocess.run(command, capture_output=True, timeout=args.timeout)
@@ -150,6 +152,8 @@ def main():
     parser.add_argument("--rung", required=True, help="path to the rung executable")
     parser.add_argument("--engine", required=True, help="engine name passed as --engine=NAME")
     parser.add_argument("--gc-stress", action="store_true", help="pass --gc-stress to rung")
+    parser.add_argument("--fold", action="store_true",
+                        help="pass --fold to rung (constant folding and dead-code removal)")
     parser.add_argument("--timeout", type=float, default=10.0,
                         help="seconds allowed per test (default 10)")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1,

@@ -866,6 +866,91 @@ How D5's noise control became code, and the choices D5 left open:
   and the explanation of any difference from the expectation are to be filled in here then. If
   the register VM turns out slower, count instructions per benchmark before profiling (spec §13).
 
+### Ladder rung 3f: constant folding and dead-code elimination
+
+- **What changed.** `--fold` runs `fold()` (`src/fold.cpp`) on the resolved syntax tree before
+  any engine sees it, so it is not specific to one VM: the tree-walker and both compilers get
+  the same simplified program, and `--dump-ast --fold` and `--dump-bytecode --fold` show it. The
+  pass is measured on the register VM (D4 row 8). Without `--fold` nothing in it runs. The whole
+  conformance suite passes with `--fold` on all three engines (`conformance-*-fold`, plus the
+  register VM with `--gc-stress`), and `tests/conformance/folding/` pins the edge cases.
+- **What it folds.** A unary or binary operation whose operands are literals becomes a literal,
+  computed by the operations in `src/runtime/ops.cpp` (D10), never by a second copy of the
+  rules. `2147483647 + 1` becomes `-2147483648`, `-7 % 3` becomes `-1`, `1 / 2.0` becomes `0.5`,
+  `1 / 0.0` becomes `inf`, `1 == 1.0` becomes `true`. `!` of a literal folds. `lit and b` and
+  `lit or b` become `b` or `lit` according to the literal's truthiness (the deciding operand's
+  value, §2.2); the operand that is not chosen is never evaluated, with or without folding.
+  Dead code: the statements after a `return` in the same block, the branch of an `if` that a
+  literal condition rules out, and a `while` whose literal condition is falsy. A statement is
+  only ever removed or replaced by another that was already in the same position, never
+  moved into another block, so no variable's scope distance (the resolver's "hops", D11) changes.
+- **What it refuses to fold.**
+  - *Anything that would raise a runtime error.* The pass asks the ops whether the operation
+    succeeds and leaves the node alone if it does not: `1 / 0`, `1 % 0`, `5 % 2.0`, `1 + true`,
+    `1 < nil`, `-"a"`. The error then happens at run time, on the operator's line, after the
+    output that precedes it (§2.4), exactly as without `--fold`. Folding it would either move
+    the error to compile time (a program that prints before failing would print nothing) or lose
+    it.
+  - *String operations.* `"a" + "b"` would allocate a string while the program is being
+    prepared, outside any engine's GC roots, and constant string arithmetic is rare. They are
+    left alone, as are `==` and `!=` on strings. (A string literal does take part as the test of `!`, `and` and `or`, where
+    only its truthiness matters.)
+  - *`while (true)`* and any other truthy constant condition: that is an infinite loop and has
+    to stay one. The condition is not removed from a loop that stays.
+  - *Code after an `if` that may not return.* Only a `return` statement ends its block; a
+    `return` inside an `if` that is not constant ends nothing.
+- **Details chosen while implementing** (open to review):
+  - The pass is one recursive walk, bottom-up, so `1 + 2 * 3` folds in one visit and a
+    condition is folded before the `if` or `while` it controls is judged. Its recursion depth
+    is bounded by the same two limits as the resolver's (§2.6).
+  - When a statement disappears where the grammar needs one (the body of an `if` or `while`),
+    it becomes an empty block. In a block's statement list it is simply removed.
+  - A string literal's truthiness is asked of the ops (`is_truthy`) through a Value interned
+    in a private heap inside the pass, rather than restated in the pass.
+  - `-0.0` is a literal now (`-` applied to `0.0`), so the compilers' constant pools have to
+    keep it apart from `0.0`. The register compiler already did (it keys floats by bit
+    pattern; `negative_zero_survives_folding` and the same-function test pin it) and the stack
+    compiler never merges constants.
+  - `--dump-ast` printed `inf` and `nan` as `inf.0` and `nan.0`, which could not happen before:
+    only a folded float can be one. It prints `inf`, `-inf` and `nan` now.
+  - `--stats` reports `fold: N expressions folded, M statements removed` (with `--fold`) and
+    `bytecode: ... instructions, ... code bytes, ... constants` for the stack and register
+    engines. The bytecode line is computed by compiling the program a second time on a scratch
+    heap, so a run without `--stats` does no extra work.
+  - The front-end fuzz target now also folds and dumps the folded tree, since folding is a pure
+    tree rewrite that needs no execution.
+- **Expected.** Small, as the issue says. A compile-time pass can only remove work that is
+  constant, and a hot loop's arithmetic is on variables. Where a program does contain a constant
+  expression, folding removes the instructions that evaluate it each time the statement runs, so
+  a hot loop gains only if its body contains one. Dead code removal matters even less, because
+  nobody writes it on purpose; it exists for the generated and edited code a larger program
+  would have.
+- **Bytecode size, before and after `--fold`** (`rung --engine=register|stack --stats FILE`, the
+  `bytecode:` line; these are counts, not timings). The programs are the six benchmarks
+  (`bench/*.rg`). Instructions are register words, or whole stack instructions:
+
+  | Benchmark | Register instructions | Stack instructions | Expressions folded |
+  |---|---|---|---|
+  | `closures` | 55 → 55 | 88 → 88 | 0 |
+  | `fib` | 22 → 22 | 35 → 35 | 0 |
+  | `loop_sum` | 14 → 14 | 31 → 31 | 0 |
+  | `nbody` | 241 → 237 | 531 → 521 | 10 |
+  | `sieve` | 35 → 35 | 94 → 94 | 0 |
+  | `strcat` | 35 → 35 | 73 → 73 | 0 |
+
+  Five of the six have nothing to fold. `nbody`'s ten are the negative literals in its body table
+  (`-1.16...` is a negation applied to `1.16...` in the source, a `NEG` at run time, a literal
+  after folding). They are in `make_bodies`, which `run` calls once before its 5,000 calls to
+  `advance`, so none of them is in a hot loop. No measurable change in the timed work is
+  expected for any of the six, and a row that shows one is noise or an effect to be explained,
+  not a result of the pass.
+- **Measured.** Not yet. Row `08_fold` (`release-goto-nanbox`, `--engine=register --fold`) is
+  in `scripts/ladder_configs.json`, but measuring it needs an exclusive machine (D5), so there is
+  no `results/08_fold.json` yet. The times, and the explanation of any difference from the
+  above, are to be filled in here then. The row's arguments are only what this rung adds; D4
+  makes the ladder cumulative, so they gain the flags of rungs 3d and 3e (superinstructions,
+  inline caching) when those land and before 08 is measured.
+
 ### JIT crashes and their causes
 
 - **Intermittent SEGV calling freshly written code, Linux arm64, asan preset only (about 5% of

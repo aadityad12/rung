@@ -1,3 +1,4 @@
 [
-  {"id": "01_tree", "label": "Tree-walker", "preset": "release", "args": ["--engine=tree"]}
+  {"id": "01_tree", "label": "Tree-walker", "preset": "release", "args": ["--engine=tree"]},
+  {"id": "08_fold", "label": "+ constant folding / dead-code elimination", "preset": "release-goto-nanbox", "args": ["--engine=register", "--fold"]}
 ]

@@ -76,6 +76,7 @@ add_library(rung_core STATIC
   src/disassembler.cpp
   src/engine.cpp
   src/engine_tree.cpp
+  src/fold.cpp
   src/jit/arm64_emitter.cpp
   src/lexer.cpp
   src/output.cpp
@@ -127,6 +128,7 @@ add_executable(rung_unit_tests
   tests/unit/compiler_reg_test.cpp
   tests/unit/compiler_stack_test.cpp
   tests/unit/engine_tree_test.cpp
+  tests/unit/fold_test.cpp
   tests/unit/lexer_test.cpp
   tests/unit/runtime_heap_test.cpp
   tests/unit/parser_test.cpp
@@ -199,7 +201,16 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
               --rung $<TARGET_FILE:rung> --engine ${engine} --gc-stress --timeout 300
               ${RUNG_GC_STRESS_SKIPS})
+    # The same suite with the constant-folding pass on (ladder rung 3f): folding must not change
+    # any program's output, error line, or exit code.
+    add_test(NAME conformance-${engine}-fold
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+              --rung $<TARGET_FILE:rung> --engine ${engine} --fold --timeout 120)
   endforeach()
+  add_test(NAME conformance-register-fold-gc-stress
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine register --fold --gc-stress --timeout 300
+            ${RUNG_GC_STRESS_SKIPS})
 
   add_test(NAME bench-cli
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_cli_check.py
