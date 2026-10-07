@@ -53,6 +53,14 @@ jobs:
       - run: docker build -t rung .
       - run: docker run --rm rung
 
+  # The README results table is generated from results/*.json (issue #8) and must never be edited
+  # by hand: regenerate it and compare. Needs no build, so it fails fast.
+  ladder-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: python3 scripts/ladder.py --check
+
   # Coverage-guided fuzzing of the lexer, parser and resolver (issue #12). Linux only: Apple
   # clang has no libFuzzer runtime. Any crash, hang, leak or sanitizer report fails the job and
   # the offending input is uploaded.
