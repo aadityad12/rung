@@ -87,6 +87,21 @@ void Heap::trace(Obj* obj) {
             // already marks; `closed` is nil until the upvalue closes, so marking it is safe.
             mark_value(static_cast<ObjUpvalue*>(obj)->closed);
             break;
+        case ObjKind::Environment: {
+            auto* env = static_cast<ObjEnvironment*>(obj);
+            mark_object(env->enclosing);  // null for a scope directly under the globals
+            for (auto& [name, value] : env->vars) {
+                mark_object(name);
+                mark_value(value);
+            }
+            break;
+        }
+        case ObjKind::TreeFunction: {
+            auto* fn = static_cast<ObjTreeFunction*>(obj);
+            mark_object(fn->name);
+            mark_object(fn->closure);
+            break;
+        }
         case ObjKind::String:
         case ObjKind::Native:
             break;
@@ -149,6 +164,12 @@ void Heap::free_object(Obj* obj) {
             break;
         case ObjKind::Upvalue:
             delete static_cast<ObjUpvalue*>(obj);
+            break;
+        case ObjKind::Environment:
+            delete static_cast<ObjEnvironment*>(obj);
+            break;
+        case ObjKind::TreeFunction:
+            delete static_cast<ObjTreeFunction*>(obj);
             break;
     }
 }

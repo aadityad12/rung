@@ -1,4 +1,4 @@
-// Rung has no engine yet; `rung --dump-tokens examples/hello.rg` shows what the lexer sees.
+// Run it with `rung examples/hello.rg`. It prints 3.5 and then done.
 fn add(a, b) {
   return a + b;
 }

@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang cmake ninja-build
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang cmake ninja-build python3
       # ThreadSanitizer maps shadow memory at fixed addresses and aborts at startup ("unexpected
       # memory mapping") when the kernel randomizes mmap addresses over more bits than the
       # sanitizer expects. This is a known Linux/TSan issue; 28 bits is the value TSan supports.

@@ -39,6 +39,15 @@ std::size_t object_bytes(const Obj& obj) {
         }
         case ObjKind::Upvalue:
             return sizeof(ObjUpvalue);
+        case ObjKind::Environment: {
+            // Rough: the map's nodes (key, value, next pointer) plus its bucket array.
+            const auto& e = static_cast<const ObjEnvironment&>(obj);
+            return sizeof(ObjEnvironment) +
+                   e.vars.size() * (sizeof(ObjString*) + sizeof(Value) + sizeof(void*)) +
+                   e.vars.bucket_count() * sizeof(void*);
+        }
+        case ObjKind::TreeFunction:
+            return sizeof(ObjTreeFunction);
     }
     return sizeof(Obj);
 }

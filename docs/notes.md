@@ -527,6 +527,25 @@ overflow point) so CI stays meaningful until this is decided. Remove the cap whe
 For each rung: what was expected, what was measured, why they differed. For the JIT: every
 crash and its cause.
 
+### Engine 1: tree-walker
+
+- **Expected:** the slowest engine and the baseline every later number is measured against. It
+  is not measured here: benchmarks are not written yet, so there is no result to report.
+- **Runtime errors are returned, not thrown.** The first version threw a C++ `RuntimeError` from
+  the failing node and caught it in `run()`. Under AddressSanitizer that broke exactly where it
+  matters: the conformance test that overflows the stack at the 10,001st nested call unwinds a
+  native stack of roughly 70 to 100 MB, and ASan refuses to clean up ("unpoison") a stack larger
+  than 64 MB when an exception starts unwinding, warns `ASan is ignoring requested
+  __asan_handle_no_return`, and then aborts on a false positive while unwinding. The 512 MiB
+  stack (D12) is big enough to reach the depth limit, but not something ASan can unwind
+  through. So an error is recorded in the engine (`error_`), each evaluation checks it after
+  every sub-evaluation and returns at once, and `return` is a separate status (`Flow::Return`).
+  Nothing in the engine throws. Any later engine that recurses on the C++ stack should do the
+  same.
+- **Scope objects are created for every block and every call, matching the resolver's scopes
+  one to one** (D11): a block that declares nothing still creates one, because the resolver
+  counted it when it computed `hops`. This is the cost the later engines remove.
+
 ### JIT crashes and their causes
 
 - **Intermittent SEGV calling freshly written code, Linux arm64, asan preset only (about 5% of

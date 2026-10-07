@@ -548,6 +548,13 @@ TEST_CASE("array_get and array_set") {
     CHECK(printed(a) == "[10, x, 30]");  // failed sets changed nothing
 }
 
+TEST_CASE("shared error text and the call depth limit") {
+    CHECK(undefined_variable_message("foo") == "undefined variable 'foo'");
+    CHECK(std::string(kErrNotCallable) == "can only call functions");
+    CHECK(std::string(kErrStackOverflow) == "stack overflow");
+    CHECK(kMaxCallDepth == 10000);
+}
+
 TEST_CASE("arity_error_message") {
     CHECK(arity_error_message(1, 2) == "expected 1 arguments but got 2");
     CHECK(arity_error_message(0, 3) == "expected 0 arguments but got 3");
