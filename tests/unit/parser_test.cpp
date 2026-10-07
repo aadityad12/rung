@@ -388,27 +388,35 @@ TEST_CASE("chain limit") {
     }
 }
 
-// A chain is not syntactic nesting, so the nesting limit lets it grow without bound (notes §2.6).
-// Building, dumping, and destroying it must not use native stack per link. The length is far past
-// what an ordinary or ThreadSanitizer stack survives with one recursive frame set per link.
+// Flat chains do not nest, so only the chain limit (notes §2.6, at most 1000 links) bounds them.
+// Original intent (#36): no native recursion per link. A chain at the limit must build, dump and
+// be destroyed (iteratively), and one far past it must be a clean compile error, not a crash.
+// The 1000/1001 boundary itself is tested in "chain limit" above.
 TEST_CASE("very long flat chains") {
-    const int n = 100000;
+    const int legal = 1000;
+    const int huge = 100000;
+    const std::string too_long = "[line 1] compile error: expression chain too long";
     struct Case {
-        std::string source;
+        std::string (*source)(int);
         std::string head;  // dump prefix that the chain's outermost nodes produce
     };
     const Case cases[] = {
-        {"print 1" + repeat(" + 1", n) + ";", "(print " + repeat("(+ ", n) + "1"},
-        {"print 1" + repeat(" and 1", n) + ";", "(print " + repeat("(and ", n) + "1"},
-        {"f" + repeat("(1)", n) + ";", "(expr " + repeat("(call ", n) + "f"},
-        {"a" + repeat("[0]", n) + ";", "(expr " + repeat("(index ", n) + "a"},
-        {"a" + repeat("[0]", n) + " = 1;", "(expr (set-index " + repeat("(index ", n - 1) + "a"},
+        {[](int n) { return "print 1" + repeat(" + 1", n) + ";"; },
+         "(print " + repeat("(+ ", legal) + "1"},
+        {[](int n) { return "print 1" + repeat(" and 1", n) + ";"; },
+         "(print " + repeat("(and ", legal) + "1"},
+        {[](int n) { return "f" + repeat("(1)", n) + ";"; }, "(expr " + repeat("(call ", legal) + "f"},
+        {[](int n) { return "a" + repeat("[0]", n) + ";"; },
+         "(expr " + repeat("(index ", legal) + "a"},
+        {[](int n) { return "a" + repeat("[0]", n) + " = 1;"; },
+         "(expr (set-index " + repeat("(index ", legal - 1) + "a"},
     };
     for (const Case& c : cases) {
-        rung::ParseResult result = parse(c.source);
+        rung::ParseResult result = parse(c.source(legal));
         REQUIRE(result.ok());
         std::string out = rung::dump_ast(*result.program);
         CHECK(out.compare(0, c.head.size(), c.head) == 0);
+        CHECK(error_of(c.source(huge)) == too_long);
         // Leaving this scope destroys the whole tree.
     }
 }
