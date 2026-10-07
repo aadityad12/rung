@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -13,29 +12,12 @@
 #include "engine.h"
 #include "runtime/function.h"
 #include "runtime/ops.h"
-
-// RUNG_VM_COUNTERS is set by CMake (ON in the debug, asan and tsan presets, OFF in release).
-// When it is 0 the counting code is not compiled at all (notes D5).
-#ifndef RUNG_VM_COUNTERS
-#define RUNG_VM_COUNTERS 0
-#endif
+#include "vm/counters.h"
 
 namespace rung {
 
-// What the VM counted while it ran (notes D5): instructions dispatched per opcode, and calls.
-// The struct always exists so the engine's layout does not depend on the build flag; only the
-// code that updates it does.
-struct VmCounters {
-    std::array<std::uint64_t, kOpCodeCount> by_opcode{};
-    std::uint64_t rung_calls = 0;    // calls that pushed a frame
-    std::uint64_t native_calls = 0;  // calls to array, len and clock
-
-    std::uint64_t instructions() const {
-        std::uint64_t total = 0;
-        for (std::uint64_t n : by_opcode) total += n;
-        return total;
-    }
-};
+// Instructions dispatched per stack opcode, and calls (notes D5).
+using VmCounters = BasicVmCounters<kOpCodeCount>;
 
 // Engine 2b: executes the stack bytecode that compile_stack produces (notes D12). A bytecode
 // dispatch loop with a value stack and call frames, following clox in Crafting Interpreters

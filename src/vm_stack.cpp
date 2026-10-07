@@ -259,6 +259,8 @@ StackEngine::CallOutcome StackEngine::call_value(int argc) {
 #endif
 
 #define RUNG_FETCH() READ_OP()
+#define RUNG_OP_ENUM OpCode
+#define RUNG_OP_LIST RUNG_OPCODE_LIST
 #define RUNG_COUNT_OP_(op) +1
 static_assert(kOpCodeCount == 0 RUNG_OPCODE_LIST(RUNG_COUNT_OP_),
               "RUNG_OPCODE_LIST in vm/dispatch.h must list every OpCode, in enum order");
@@ -525,6 +527,8 @@ bool StackEngine::execute(std::size_t stop_frames) {
 #undef FAIL
 #undef READ_OP
 #undef RUNG_FETCH
+#undef RUNG_OP_ENUM
+#undef RUNG_OP_LIST
 #undef BINARY_OP
 
 }  // namespace rung

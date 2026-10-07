@@ -9,11 +9,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(RUNG_WERROR "Treat compiler warnings as errors" ON)
 set(RUNG_SANITIZE "" CACHE STRING "Sanitizers to build with: empty, 'address,undefined', or 'thread'")
 
-# Instruction and call counters in the stack VM (notes D5). Compiled out entirely when OFF, so a
+# Instruction and call counters in the stack and register VMs (notes D5). Compiled out entirely when OFF, so a
 # release build pays nothing. Debug-like presets turn it ON; release leaves it OFF.
 option(RUNG_VM_COUNTERS "Count instructions dispatched per opcode and calls in the VMs" OFF)
 
-# Computed-goto dispatch in the stack VM (ladder rung 3a, notes D4). OFF keeps the portable
+# Computed-goto dispatch in both VMs (ladder rung 3a, notes D4). OFF keeps the portable
 # `switch`. Labels-as-values are a GNU extension that clang supports on every platform we build.
 option(RUNG_COMPUTED_GOTO "Dispatch bytecode with computed goto instead of a switch" OFF)
 
@@ -85,6 +85,7 @@ add_library(rung_core STATIC
   src/resolver.cpp
   src/runtime/ops.cpp
   src/token.cpp
+  src/vm_reg.cpp
   src/vm_stack.cpp
 )
 target_include_directories(rung_core PUBLIC src)
@@ -93,10 +94,10 @@ if(RUNG_VM_COUNTERS)
   target_compile_definitions(rung_core PUBLIC RUNG_VM_COUNTERS=1)
 endif()
 if(RUNG_COMPUTED_GOTO)
-  # Only the translation unit with the dispatch loop uses `&&label` and `goto *`, which -Wpedantic
+  # Only the translation units with a dispatch loop use `&&label` and `goto *`, which -Wpedantic
   # reports as -Wgnu-label-as-value. Everything else keeps the full warning set.
   target_compile_definitions(rung_core PUBLIC RUNG_COMPUTED_GOTO=1)
-  set_source_files_properties(src/vm_stack.cpp PROPERTIES COMPILE_OPTIONS
+  set_source_files_properties(src/vm_stack.cpp src/vm_reg.cpp PROPERTIES COMPILE_OPTIONS
                               -Wno-gnu-label-as-value)
 endif()
 if(RUNG_NANBOX)
@@ -130,6 +131,7 @@ add_executable(rung_unit_tests
   tests/unit/resolver_test.cpp
   tests/unit/runtime_ops_test.cpp
   tests/unit/runtime_value_test.cpp
+  tests/unit/vm_reg_test.cpp
   tests/unit/vm_stack_test.cpp
 )
 target_include_directories(rung_unit_tests SYSTEM PRIVATE third_party/doctest)
@@ -184,7 +186,7 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
       --skip functions/ten_thousand_and_one_nested_calls_overflow.rg)
   endif()
 
-  foreach(engine tree stack)
+  foreach(engine tree stack register)
     add_test(NAME conformance-${engine}
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
               --rung $<TARGET_FILE:rung> --engine ${engine} --timeout 120)

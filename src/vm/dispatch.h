@@ -7,13 +7,17 @@
 #endif
 
 // Instruction dispatch for the bytecode VMs, behind macros so the loop body is the same for both
-// implementations (notes D4). The loop body uses only these macros and never writes `switch`,
-// `case` or `goto` itself.
+// implementations (notes D4), and both VMs (stack and register) use the same macros. The loop
+// body uses only these macros and never writes `switch`, `case` or `goto` itself.
 //
+//   RUNG_OP_ENUM           defined by the VM before RUNG_DISPATCH: its opcode enum (`OpCode` or
+//                          `RegOp`)
+//   RUNG_OP_LIST(X)        defined by the VM before RUNG_DISPATCH: RUNG_OPCODE_LIST or
+//                          RUNG_REG_OPCODE_LIST below, every enumerator of that enum in order
 //   RUNG_FETCH()           defined by the VM before RUNG_DISPATCH: an expression that reads the
 //                          next opcode (and advances the instruction pointer)
 //   RUNG_DISPATCH()        starts the loop and dispatches the first instruction
-//   RUNG_CASE(op)          the code of one opcode (the argument is an OpCode enumerator name)
+//   RUNG_CASE(op)          the code of one opcode (the argument is an enumerator name)
 //   RUNG_NEXT()            finish this instruction and dispatch the next one
 //   RUNG_END_DISPATCH()    closes the loop opened by RUNG_DISPATCH
 //
@@ -39,11 +43,21 @@
     X(Call) X(Closure) X(CloseUpvalue) X(Return)                                               \
     X(Print) X(Array) X(IndexGet) X(IndexSet)
 
+// The same for the register VM: every RegOp in bytecode/register_code.h, in enum order.
+#define RUNG_REG_OPCODE_LIST(X)                                                                \
+    X(Move) X(LoadK) X(LoadNil) X(LoadTrue) X(LoadFalse)                                       \
+    X(GetGlobal) X(SetGlobal) X(DefineGlobal) X(GetUpvalue) X(SetUpvalue)                      \
+    X(Add) X(Sub) X(Mul) X(Div) X(Mod)                                                         \
+    X(Eq) X(Ne) X(Lt) X(Le) X(Gt) X(Ge) X(Neg) X(Not)                                          \
+    X(Jump) X(JumpIfFalse) X(JumpIfTrue)                                                       \
+    X(Call) X(Closure) X(Capture) X(Close) X(Return) X(ReturnNil)                              \
+    X(Print) X(Array) X(ArrayAppend) X(IndexGet) X(IndexSet)
+
 #if RUNG_COMPUTED_GOTO
 
 #define RUNG_LABEL_ADDRESS_(op) &&rung_op_##op,
 #define RUNG_DISPATCH()                                                                        \
-    static const void* const rung_dispatch_table[] = {RUNG_OPCODE_LIST(RUNG_LABEL_ADDRESS_)};  \
+    static const void* const rung_dispatch_table[] = {RUNG_OP_LIST(RUNG_LABEL_ADDRESS_)};      \
     RUNG_NEXT();
 #define RUNG_CASE(op) rung_op_##op:
 #define RUNG_NEXT() goto* rung_dispatch_table[static_cast<std::uint8_t>(RUNG_FETCH())]
@@ -54,7 +68,7 @@
 #define RUNG_DISPATCH()  \
     for (;;) {           \
         switch (RUNG_FETCH()) {
-#define RUNG_CASE(op) case OpCode::op:
+#define RUNG_CASE(op) case RUNG_OP_ENUM::op:
 #define RUNG_NEXT() continue
 #define RUNG_END_DISPATCH() \
         }                   \

@@ -87,6 +87,9 @@ enum class RegOp : std::uint8_t {
     IndexSet,      // A RK(B) RK(C)   R[A][RK(B)] = RK(C)   (A is a register; no value is produced)
 };
 
+// Number of register opcodes (for per-opcode tables such as the VM's instruction counters).
+constexpr std::size_t kRegOpCount = static_cast<std::size_t>(RegOp::IndexSet) + 1;
+
 // The most elements one Array / ArrayAppend instruction takes; they are evaluated into
 // consecutive registers first, so this bounds the registers an array literal needs.
 constexpr int kArrayBatch = 50;

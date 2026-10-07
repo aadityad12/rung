@@ -251,9 +251,7 @@ std::string disassemble(const ObjFunction& script) {
 // ---- Register bytecode ------------------------------------------------------------------------
 // Same row layout as above; `r3` is register 3 and `k2(7)` constant 2, shown by value.
 
-namespace {
-
-const char* reg_op_name(RegOp op) {
+const char* reg_opcode_name(RegOp op) {
     switch (op) {
         case RegOp::Move: return "MOVE";
         case RegOp::LoadK: return "LOADK";
@@ -296,6 +294,8 @@ const char* reg_op_name(RegOp op) {
     return "UNKNOWN";
 }
 
+namespace {
+
 std::string reg_text(std::uint32_t reg) { return "r" + std::to_string(reg); }
 
 // `k3(7)`: constant 3, shown by value.
@@ -322,7 +322,7 @@ std::size_t disassemble_register_instruction(const RegChunk& chunk, std::size_t 
     std::uint32_t c = insn_c(insn);
     bool b_const = (insn_flags(insn) & kFlagBConst) != 0;
     bool c_const = (insn_flags(insn) & kFlagCConst) != 0;
-    const char* name = reg_op_name(op);
+    const char* name = reg_opcode_name(op);
     std::size_t next = index + 1;
 
     append_format(out, "%04zu %4d ", index, chunk.line_at(index));

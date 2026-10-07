@@ -36,6 +36,9 @@ std::string disassemble_function(const ObjFunction& function);
 // instruction.
 std::size_t disassemble_instruction(const Chunk& chunk, std::size_t offset, std::string& out);
 
+// The disassembly name of a register opcode (`GET_GLOBAL`); the register VM's counters use it.
+const char* reg_opcode_name(RegOp op);
+
 // Register bytecode (compile_register) in the same style. Rows show the instruction's index
 // (not a byte offset: every instruction is one 64-bit word), its source line, the opcode name and
 // its operands: `r3` is register 3, `k2(7)` is constant 2 (shown by value), and a jump shows the
