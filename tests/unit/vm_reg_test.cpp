@@ -41,7 +41,8 @@ std::unique_ptr<Program> compile_program(const std::string& source) {
 
 // Runs `source` on the engine called `engine_name`. The register VM does not recurse on the C++
 // stack, so no big thread stack is needed.
-RegRun run_on(const std::string& engine_name, const std::string& source, bool stress = false) {
+RegRun run_on(const std::string& engine_name, const std::string& source, bool stress = false,
+              bool inline_cache = false) {
     std::unique_ptr<Program> program = compile_program(source);
     std::FILE* file = std::tmpfile();
     RegRun run;
@@ -49,7 +50,9 @@ RegRun run_on(const std::string& engine_name, const std::string& source, bool st
         Heap heap;
         heap.set_stress(stress);
         Output out(file);
-        std::unique_ptr<Engine> engine = make_engine(engine_name, heap, out);
+        EngineOptions options;
+        options.inline_cache = inline_cache;
+        std::unique_ptr<Engine> engine = make_engine(engine_name, heap, out, options);
         REQUIRE(engine != nullptr);
         run.result = engine->run(*program);
         out.flush();
@@ -62,6 +65,10 @@ RegRun run_on(const std::string& engine_name, const std::string& source, bool st
 
 RegRun run_reg(const std::string& source, bool stress = false) {
     return run_on("register", source, stress);
+}
+
+RegRun run_cached(const std::string& source, bool stress = false) {
+    return run_on("register", source, stress, true);
 }
 
 }  // namespace
@@ -419,6 +426,164 @@ TEST_CASE("register engine: agrees with the tree-walker and the stack VM on the 
         }
     }
 }
+
+// ---- inline cache (ladder rung 3e) ------------------------------------------------------------
+
+TEST_CASE("inline cache: the cached engine agrees with the plain one, errors and lines included") {
+    const char* programs[] = {
+        "let x = 1; fn f() { return x; } print f(); let x = 2; print f();",
+        "let n = 0; fn bump() { n = n + 1; } bump(); bump(); bump(); print n;",
+        "fn fib(n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); } print fib(15);",
+        "fn get() { return late; } let late = 7; print get(); late = 8; print get();",
+        ("fn len2(a) { return len(a); } print len2([1, 2]); fn len(a) { return 0; }"
+         " print len2([1]);"),
+        "let a = 1;\nfn f() {\n  print a;\n  return b;\n}\nf();\n",
+        "let a = 0;\nfn g() {\n  a = a + 1;\n  b = 2;\n}\ng();\n",
+        "fn f() { return missing; }\nprint 1;\nf();\n",
+        "let i = 0; while (i < 3) { print i; i = i + 1; } print i;",
+        ("fn make() { let c = 0; fn inc() { c = c + 1; total = total + 1; return c; }"
+         " return inc; }\n"
+         "let total = 0; let a = make(); let b = make(); a(); a(); b(); print total;"),
+    };
+    for (const char* source : programs) {
+        CAPTURE(source);
+        for (bool stress : {false, true}) {
+            RegRun plain = run_reg(source, stress);
+            RegRun cached = run_cached(source, stress);
+            CHECK(cached.output == plain.output);
+            REQUIRE(cached.result.runtime_error.has_value() ==
+                    plain.result.runtime_error.has_value());
+            if (plain.result.runtime_error) {
+                CHECK(cached.result.runtime_error->line == plain.result.runtime_error->line);
+                CHECK(cached.result.runtime_error->message ==
+                      plain.result.runtime_error->message);
+            }
+        }
+    }
+}
+
+TEST_CASE("inline cache: a global defined after the function that reads it was created") {
+    RegRun run = run_cached(
+        "fn get() { return late; }\n"
+        "fn set(v) { late = v; }\n"
+        "let late = \"first\";\n"
+        "print get(); set(\"second\"); print get();\n"
+        "let late = \"third\"; print get();\n");
+    REQUIRE(run.result.ok());
+    CHECK(run.output == "first\nsecond\nthird\n");
+}
+
+TEST_CASE("inline cache: a lookup that fails caches nothing, so the error comes back") {
+    // The first run defines `f`, whose read of `x` fails because `x` does not exist yet. The second
+    // run defines `x` (on the same engine, so the same global table). The very same instruction in
+    // `f` must now find it: a miss that failed must not have stored anything.
+    std::unique_ptr<Program> first = compile_program("fn f() { return x; }\n");
+    std::unique_ptr<Program> second = compile_program("let x = 5;\n");
+    std::FILE* file = std::tmpfile();
+    Heap heap;
+    Output out(file);
+    RegisterEngine engine(heap, out, true);
+    REQUIRE(engine.run(*first).ok());
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        CallResult early = engine.call_global("f");
+        REQUIRE(early.runtime_error.has_value());
+        CHECK(early.runtime_error->message == "undefined variable 'x'");
+        CHECK(early.runtime_error->line == 1);
+    }
+    REQUIRE(engine.run(*second).ok());
+    CallResult late = engine.call_global("f");
+    REQUIRE(late.ok());
+    CHECK(as_int(late.value) == 5);
+    std::fclose(file);
+}
+
+TEST_CASE("inline cache: a cached cell survives the global table growing") {
+    // Cache `keep` (a read and a write site), then add enough globals to force the hash table to
+    // rehash several times. The cells must not have moved.
+    std::string source =
+        "let keep = \"kept\";\n"
+        "fn read() { return keep; }\n"
+        "fn write(v) { keep = v; }\n"
+        "print read();\n";
+    for (int i = 0; i < 500; ++i) {
+        source += "let g" + std::to_string(i) + " = " + std::to_string(i) + ";\n";
+    }
+    source += "print read(); write(\"changed\"); print read(); print keep; print g0 + g499;\n";
+    for (bool stress : {false, true}) {
+        RegRun run = run_cached(source, stress);
+        REQUIRE(run.result.ok());
+        CHECK(run.output == "kept\nkept\nchanged\nchanged\n499\n");
+    }
+}
+
+TEST_CASE("inline cache: functions nested at any depth get their own caches") {
+    RegRun run = run_cached(
+        "let g = 1;\n"
+        "fn outer() {\n"
+        "  fn middle() { fn inner() { g = g + 1; return g; } return inner; }\n"
+        "  return middle;\n"
+        "}\n"
+        "let inner = outer()();\n"
+        "print inner(); print inner(); print g;\n");
+    REQUIRE(run.result.ok());
+    CHECK(run.output == "2\n3\n3\n");
+}
+
+TEST_CASE("make_engine gives the inline cache to the register engine only") {
+    Heap heap;
+    std::FILE* file = std::tmpfile();
+    Output out(file);
+    EngineOptions options;
+    options.inline_cache = true;
+    CHECK(make_engine("register", heap, out, options) != nullptr);
+    CHECK(make_engine("stack", heap, out, options) == nullptr);
+    CHECK(make_engine("tree", heap, out, options) == nullptr);
+    CHECK(make_engine("stack", heap, out) != nullptr);  // without the option, as before
+    std::fclose(file);
+}
+
+#if RUNG_VM_COUNTERS
+TEST_CASE("inline cache: each instruction misses once, then hits") {
+    // `get` reads `x` at one instruction that the loop runs 100 times, and the loop's own global
+    // accesses run 100 times each too. Each instruction misses on its first execution only.
+    std::unique_ptr<Program> program = compile_program(
+        "let x = 3;\n"
+        "fn get() { return x; }\n"
+        "let i = 0;\n"
+        "let total = 0;\n"
+        "while (i < 100) { total = total + get(); i = i + 1; }\n"
+        "print total;\n");
+    std::FILE* file = std::tmpfile();
+    Heap heap;
+    Output out(file);
+    RegisterEngine engine(heap, out, true);
+    REQUIRE(engine.run(*program).ok());
+    const RegVmCounters& counters = engine.counters();
+    std::uint64_t executed = counters.by_opcode[static_cast<std::size_t>(RegOp::GetGlobal)] +
+                             counters.by_opcode[static_cast<std::size_t>(RegOp::SetGlobal)];
+    // Every execution is a hit or a miss.
+    CHECK(counters.global_cache_hits + counters.global_cache_misses == executed);
+    // A handful of instructions, far fewer than the 100 iterations.
+    CHECK(counters.global_cache_misses > 0);
+    CHECK(counters.global_cache_misses < 12);
+    CHECK(counters.global_cache_hits > 300);
+    CHECK(engine.stats_report().find("inline cache:") != std::string::npos);
+    out.flush();
+    CHECK(slurp_file(file) == "300\n");
+    std::fclose(file);
+
+    // Without the cache the counters stay at zero and the report has no cache line.
+    std::FILE* file2 = std::tmpfile();
+    Output out2(file2);
+    RegisterEngine plain(heap, out2);
+    REQUIRE(plain.run(*program).ok());
+    CHECK(plain.counters().global_cache_hits == 0);
+    CHECK(plain.counters().global_cache_misses == 0);
+    CHECK(plain.stats_report().find("inline cache:") == std::string::npos);
+    out2.flush();
+    std::fclose(file2);
+}
+#endif
 
 TEST_CASE("make_engine knows the register engine") {
     Heap heap;

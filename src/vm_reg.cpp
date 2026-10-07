@@ -14,14 +14,15 @@
 
 namespace rung {
 
-RegisterEngine::RegisterEngine(Heap& heap, Output& out)
+RegisterEngine::RegisterEngine(Heap& heap, Output& out, bool inline_cache)
     : heap_(heap),
       out_(out),
       // `new Value[n]` without braces leaves the slots uninitialised, so no page is touched.
       register_storage_(new Value[kRegisterSlots]),
       registers_(register_storage_.get()),
       register_end_(registers_ + kRegisterSlots),
-      frames_(new CallFrame[kMaxFrames]) {
+      frames_(new CallFrame[kMaxFrames]),
+      inline_cache_(inline_cache) {
     registers_[0] = make_nil();
     // The root marker goes in first: register_natives allocates, and each native must already
     // be reachable through globals_ by the time the next allocation collects.
@@ -121,6 +122,27 @@ void RegisterEngine::close_upvalues(Value* last) {
     }
 }
 
+// ---- inline cache (ladder rung 3e) -----------------------------------------------------------
+
+// Looks `name` up in the global table and returns its cell, or null if it is not defined. This is
+// the slow path of GET_GLOBAL / SET_GLOBAL: with the inline cache it runs once per instruction,
+// the first time that instruction executes. A lookup that fails caches nothing, so an undefined
+// global keeps raising the same error each time the instruction runs, until it is defined.
+Value* RegisterEngine::find_global(ObjString* name) {
+    auto it = globals_.find(name);
+    return it == globals_.end() ? nullptr : &it->second;
+}
+
+// Gives `function` and every function nested in it one cache slot per instruction, all empty.
+// Nested functions are reachable only as constants of the function that contains them. Done once,
+// before the code runs, so the dispatch loop never has to check that a cache exists.
+void RegisterEngine::attach_global_caches(ObjFunction* function) {
+    function->global_cache.assign(function->reg.code.size(), nullptr);
+    for (const Value& constant : function->reg.constants) {
+        if (is_function(constant)) attach_global_caches(as_function(constant));
+    }
+}
+
 // ---- entry points ----------------------------------------------------------------------------
 
 EngineResult RegisterEngine::run(const Program& program) {
@@ -133,6 +155,7 @@ EngineResult RegisterEngine::run(const Program& program) {
     // The script function is held only by `compiled` until it is in slot 0 (always marked), and
     // nothing has allocated since compile_register returned. Then its closure replaces it there,
     // as the callee of the entry frame.
+    if (inline_cache_) attach_global_caches(compiled.function);
     registers_[0] = make_obj(compiled.function);
     ObjClosure* script = heap_.allocate<ObjClosure>(compiled.function);
     registers_[0] = make_obj(script);
@@ -180,6 +203,10 @@ std::string RegisterEngine::stats_report() const {
     std::string text = "vm: " + std::to_string(counters_.instructions()) +
                        " instructions dispatched, " + std::to_string(counters_.rung_calls) +
                        " calls, " + std::to_string(counters_.native_calls) + " native calls\n";
+    if (inline_cache_) {
+        text += "inline cache: " + std::to_string(counters_.global_cache_hits) + " hits, " +
+                std::to_string(counters_.global_cache_misses) + " misses\n";
+    }
     for (std::size_t op = 0; op < kRegOpCount; ++op) {
         if (counters_.by_opcode[op] == 0) continue;
         char row[64];
@@ -268,12 +295,36 @@ RegisterEngine::CallOutcome RegisterEngine::call_value(Value* callee_slot, int a
         pc = frame->pc;                                          \
         base = frame->base;                                      \
         constants = closure->function->reg.constants.data();     \
+        if constexpr (kInlineCache) {                            \
+            code_begin = closure->function->reg.code.data();     \
+            global_cache = closure->function->global_cache.data();\
+        }                                                        \
     } while (false)
 #define FAIL(message)       \
     do {                    \
         SAVE_STATE();       \
         fail(message);      \
         return false;       \
+    } while (false)
+
+// Makes `slot` (a cache slot, a Value*&) point at the cell of the global `name`, looking it up
+// only when the slot is empty; an undefined global is the runtime error and the slot stays empty.
+#if RUNG_VM_COUNTERS
+#define COUNT_CACHE(field) (counters_.field += 1)
+#else
+#define COUNT_CACHE(field) ((void)0)
+#endif
+#define GLOBAL_CACHE_LOOKUP(slot, name)                      \
+    do {                                                     \
+        if ((slot) != nullptr) {                             \
+            COUNT_CACHE(global_cache_hits);                  \
+        } else {                                             \
+            (slot) = find_global(name);                      \
+            if ((slot) == nullptr) {                         \
+                FAIL(undefined_variable_message((name)->chars)); \
+            }                                                \
+            COUNT_CACHE(global_cache_misses);                \
+        }                                                    \
     } while (false)
 
 #define REG_A() base[insn_a(insn)]
@@ -300,12 +351,21 @@ static_assert(kRegOpCount == 0 RUNG_REG_OPCODE_LIST(RUNG_COUNT_OP_),
 // runtime error happens. Returns true with the entry frame's result in result_, or false with
 // error_ set (the caller unwinds, see take_error). The entry frame must already be pushed.
 bool RegisterEngine::execute(std::size_t stop_frames) {
+    return inline_cache_ ? execute_loop<true>(stop_frames) : execute_loop<false>(stop_frames);
+}
+
+template <bool kInlineCache>
+bool RegisterEngine::execute_loop(std::size_t stop_frames) {
     CallFrame* frame;
     ObjClosure* closure;
     const Instruction* pc;
     Value* base;
     const Value* constants;
     Instruction insn;
+    // The running function's instructions and its cache, which has one slot per instruction
+    // (ObjFunction::global_cache). Only the cached instantiation uses them.
+    [[maybe_unused]] const Instruction* code_begin = nullptr;
+    [[maybe_unused]] Value** global_cache = nullptr;
     LOAD_FRAME();
 
     RUNG_DISPATCH()
@@ -331,18 +391,36 @@ bool RegisterEngine::execute(std::size_t stop_frames) {
         RUNG_NEXT();
     }
 
+    // With the inline cache, each of these instructions owns the slot at its own index in the
+    // function's cache (`pc` has already moved past it, hence the - 1). An empty slot is a
+    // miss: look the name up, and remember the cell only if it exists, so an undefined global
+    // is found undefined again the next time. A full slot is a hit and skips the hash lookup.
+    // The cell never moves and the global never stops being defined, so a slot never goes
+    // stale (see globals_ in vm_reg.h). Without the cache these are the plain lookups.
     RUNG_CASE(GetGlobal) {
         ObjString* name = as_string(constants[insn_bx(insn)]);
-        auto it = globals_.find(name);
-        if (it == globals_.end()) FAIL(undefined_variable_message(name->chars));
-        REG_A() = it->second;
+        if constexpr (kInlineCache) {
+            Value*& slot = global_cache[(pc - 1) - code_begin];
+            GLOBAL_CACHE_LOOKUP(slot, name);
+            REG_A() = *slot;
+        } else {
+            auto it = globals_.find(name);
+            if (it == globals_.end()) FAIL(undefined_variable_message(name->chars));
+            REG_A() = it->second;
+        }
         RUNG_NEXT();
     }
     RUNG_CASE(SetGlobal) {
         ObjString* name = as_string(constants[insn_bx(insn)]);
-        auto it = globals_.find(name);
-        if (it == globals_.end()) FAIL(undefined_variable_message(name->chars));
-        it->second = REG_A();
+        if constexpr (kInlineCache) {
+            Value*& slot = global_cache[(pc - 1) - code_begin];
+            GLOBAL_CACHE_LOOKUP(slot, name);
+            *slot = REG_A();
+        } else {
+            auto it = globals_.find(name);
+            if (it == globals_.end()) FAIL(undefined_variable_message(name->chars));
+            it->second = REG_A();
+        }
         RUNG_NEXT();
     }
     RUNG_CASE(DefineGlobal) {
@@ -547,6 +625,8 @@ bool RegisterEngine::execute(std::size_t stop_frames) {
 #undef SAVE_STATE
 #undef LOAD_FRAME
 #undef FAIL
+#undef GLOBAL_CACHE_LOOKUP
+#undef COUNT_CACHE
 #undef REG_A
 #undef REG_B
 #undef RK_B

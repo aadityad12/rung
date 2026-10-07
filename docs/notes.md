@@ -866,6 +866,84 @@ How D5's noise control became code, and the choices D5 left open:
   and the explanation of any difference from the expectation are to be filled in here then. If
   the register VM turns out slower, count instructions per benchmark before profiling (spec §13).
 
+### Ladder rung 3e: inline caching for globals
+
+- **What changed.** `--inline-cache` (register VM only; any other engine refuses it with exit
+  code 64, so a run can never be labelled with a rung it did not use) makes `GET_GLOBAL` and
+  `SET_GLOBAL` skip the hash lookup after their first execution. Every unit test and the whole
+  conformance suite pass with the flag on, with and without `--gc-stress`
+  (`conformance-register-inline-cache[-gc-stress]`), and the benchmark checksums are checked with
+  it too (`bench-check-register-inline-cache`, release builds).
+- **How it works.**
+  - *A global's cell.* The global table is `std::unordered_map<ObjString*, Value>`. The C++
+    standard guarantees that growing the table (a rehash) moves its buckets but never its
+    elements, so the address of a global's `Value` is a stable cell for as long as the engine
+    lives. Nothing in Rung can remove a global, so the cell is never freed either. The table
+    itself did not change, which is why the VM without the flag is untouched.
+  - *The cache.* Each function has `ObjFunction::global_cache`, one `Value*` slot per
+    instruction of its register code (the issue's "side table indexed by instruction position";
+    slot `i` belongs to instruction `i`). The engine sizes it, empty, for the script and every
+    function nested in it before anything runs. The first time a `GET_GLOBAL` / `SET_GLOBAL`
+    executes, its slot is empty: it looks the name up, stores the cell's address, and uses it.
+    Every later execution of that instruction reads the slot and goes straight to the cell.
+  - *Why nothing is ever invalidated.* A cache usually has to be thrown away when what it
+    remembers changes. Here what is remembered is *where* the variable lives, not its value, and
+    neither the cell's address nor the fact that it is defined can change. `let x = 2;` on an
+    existing global and `x = 3;` both write through the same cell, so a function that cached
+    `x` earlier reads the new value. A native replaced by `fn len(...)` is the same cell with a
+    new value. This is the whole reason the table has stable cells.
+  - *Undefined globals.* A lookup that finds nothing stores nothing and raises `undefined
+    variable 'x'` at the instruction's line, exactly as without the cache; if `x` is defined
+    later, the same instruction finds it the next time it runs. So the issue's "a cell that
+    exists but was never defined must be distinguishable from a defined one" holds by a
+    different design: a name has a cell only once it is defined, so a cell that exists is
+    always a defined one and no flag is needed. (A design that created cells ahead of the
+    definition would need the flag; this one does not create them.)
+  - *The loop has two instantiations* (`execute_loop<false>` and `<true>`), chosen once per
+    `execute()`. Without the flag the dispatch loop is the plain lookup it was before this rung,
+    with no test of the flag anywhere in it and no extra work when a frame is entered or left, so
+    the previous row of the ladder is not made slower to flatter this one. With the flag,
+    entering or leaving a frame loads two more pointers (the function's code start and its cache).
+- **Cost.** One 8-byte slot per instruction of every function, even though only global accesses
+  use one: the cache is as large as the bytecode itself (an instruction is 8 bytes). Slots
+  sit in a separate array from the code, so the instruction stream itself is unchanged. A
+  dense numbering of only the global-access sites would be smaller but needs an operand the
+  64-bit instruction word does not have spare (D14). The cost has not been measured.
+- **Expected.** A hit replaces hashing a pointer, a bucket walk and a key comparison with a load
+  of the slot and a branch, so the gain is proportional to how much of a benchmark is global
+  accesses. Instruction counts from the VM counters (debug build, `--inline-cache --stats
+  --bench=1`: the script's top level plus one call of `run()`; these are counts, not timings):
+
+  | Benchmark | Instructions dispatched | `GET_GLOBAL` | Cache hits | Cache misses |
+  |---|---|---|---|---|
+  | `fib` | 4,131,542 | 635,621 | 635,618 | 3 |
+  | `closures` | 9,600,020 | 300,001 | 299,999 | 2 |
+  | `nbody` | 8,491,383 | 60,013 | 60,006 | 7 |
+  | `strcat` | 1,910,017 | 30,001 | 29,999 | 2 |
+  | `sieve` | 9,902,205 | 1 | 0 | 1 |
+  | `loop_sum` | 14,000,008 | 0 | 0 | 0 |
+
+  Every global access after the first per instruction is a hit (the misses are the distinct
+  instructions that ran). `fib` has the most, one for every call (it calls itself through the
+  global `fib`, D7), and about one instruction in 6.5 is a `GET_GLOBAL`, so it is the benchmark
+  to look at; `loop_sum` and `sieve` do their work in locals, so the rung cannot change them and
+  a measured difference there would be noise. The saving per hit is small against a whole `CALL`
+  and its frame setup, so a large gain on `fib` would be surprising; what it is, is to be measured.
+- **Measured.** Not yet. Row `07_ic` (the previous row plus `--inline-cache`) needs an exclusive
+  machine (D5). Time per benchmark and the explanation of any difference from the expectation
+  are to be filled in here then.
+- **What the ladder rows must pass.** D4 makes the ladder cumulative, so `--inline-cache` belongs
+  in the arguments of every row from 07 on. `scripts/ladder_configs.json` has no `07_ic` row yet
+  (rows 02 to 07 are added as they are measured), but it does have `08_fold`, whose arguments
+  are `--engine=register --fold`: that row must gain `--inline-cache` (and the superinstruction
+  flag, rung 3d) before it is measured, or it would measure folding without the rung below it.
+  The measured rows were not touched in this change. `--fold` and `--inline-cache` compose, and
+  the conformance suite runs with both at once (`conformance-register-fold-inline-cache`).
+- **For later rungs.** An instruction that fuses a global access (a superinstruction, rung 3d)
+  must keep the rule "the slot at this instruction's own index is this instruction's", and the
+  JIT can embed the cell address a cache slot holds instead of looking the name up (D7's
+  self-recursion check is exactly "does the global's cell still hold this function").
+
 ### Ladder rung 3f: constant folding and dead-code elimination
 
 - **What changed.** `--fold` runs `fold()` (`src/fold.cpp`) on the resolved syntax tree before

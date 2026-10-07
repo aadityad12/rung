@@ -21,6 +21,10 @@ struct BasicVmCounters {
     std::array<std::uint64_t, kOpCount> by_opcode{};
     std::uint64_t rung_calls = 0;    // calls that pushed a frame
     std::uint64_t native_calls = 0;  // calls to array, len and clock
+    // Register VM with --inline-cache (ladder rung 3e): GET_GLOBAL / SET_GLOBAL executions that
+    // used the remembered cell, and those that had to look the name up. Both stay 0 otherwise.
+    std::uint64_t global_cache_hits = 0;
+    std::uint64_t global_cache_misses = 0;
 
     std::uint64_t instructions() const {
         std::uint64_t total = 0;

@@ -22,6 +22,13 @@ struct ObjFunction : Obj {
     int upvalue_count = 0;
     Chunk chunk;
     RegChunk reg;
+    // Run-time state of the register VM's inline cache (ladder rung 3e, notes §5), not part of
+    // the compiled code: one slot per instruction of `reg`, null until that GET_GLOBAL or
+    // SET_GLOBAL first finds its global. A slot points at the global's cell in the engine's
+    // table, which never moves. Empty unless the engine runs with --inline-cache. Only the VM's
+    // own thread reads or writes it, so the bytecode itself stays immutable and safe to read
+    // from the background compiler thread (notes D8).
+    std::vector<Value*> global_cache;
 
     explicit ObjFunction(ObjString* n) : Obj(ObjKind::Function), name(n) {}
 };

@@ -52,7 +52,8 @@ enum class RegOp : std::uint8_t {
     LoadTrue,      // A          R[A] = true
     LoadFalse,     // A          R[A] = false
     // Variables. Globals are looked up by name at run time: Bx is the constant index of the
-    // interned name (deliberately slow; inline caching, rung 3e, removes it).
+    // interned name. That hash lookup is what the VM's inline cache (rung 3e, --inline-cache)
+    // removes: it is run-time state beside the code, so the instructions are the same either way.
     GetGlobal,     // A Bx       R[A] = globals[K[Bx]]; error if undefined
     SetGlobal,     // A Bx       globals[K[Bx]] = R[A]; error if undefined
     DefineGlobal,  // A Bx       globals[K[Bx]] = R[A] (creates or overwrites)

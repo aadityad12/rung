@@ -58,6 +58,21 @@ def main():
         run = rung("--bench=2", f"--bench-out={out}")
         check(run.returncode == 70, "missing run() must be a runtime error")
 
+        # --inline-cache (ladder rung 3e) is a register-VM flag, and bench mode takes it. Another
+        # engine must refuse it (exit 64), because a run labelled with a rung it did not use
+        # would make the results table a lie.
+        with open(source, "w") as f:
+            f.write(PROGRAM)
+        run = rung("--engine=register", "--inline-cache", "--bench=3", f"--bench-out={out}")
+        check(run.returncode == 0 and not run.stdout, f"--inline-cache bench: {run.returncode}")
+        if run.returncode == 0:
+            data = json.load(open(out))
+            check(data["engine"] == "register" and data["result"] == "n=x", "inline-cache result")
+        for engine in ("tree", "stack"):
+            run = rung(f"--engine={engine}", "--inline-cache")
+            check(run.returncode == 64 and "--inline-cache needs --engine=register" in run.stderr,
+                  f"--inline-cache on {engine} must be a usage error, got {run.returncode}")
+
     for failure in failures:
         print("FAILURE:", failure, file=sys.stderr)
     return 1 if failures else 0

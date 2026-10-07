@@ -21,6 +21,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rung", required=True)
     parser.add_argument("--engine", required=True)
+    parser.add_argument("--inline-cache", action="store_true",
+                        help="pass --inline-cache (register engine only)")
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
 
@@ -35,8 +37,10 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         for name in names:
             out = os.path.join(tmp, name + ".json")
-            cmd = [args.rung, f"--engine={args.engine}", "--bench=1", f"--bench-out={out}",
-                   os.path.join(bench_dir, name + ".rg")]
+            cmd = [args.rung, f"--engine={args.engine}"]
+            if args.inline_cache:
+                cmd.append("--inline-cache")
+            cmd += ["--bench=1", f"--bench-out={out}", os.path.join(bench_dir, name + ".rg")]
             try:
                 run = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
             except subprocess.TimeoutExpired:

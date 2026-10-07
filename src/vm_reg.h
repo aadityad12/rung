@@ -34,7 +34,9 @@ using RegVmCounters = BasicVmCounters<kRegOpCount>;
 // memory at `base + index`, and RegChunk::line_at maps an instruction index to its source line.
 class RegisterEngine final : public Engine {
 public:
-    RegisterEngine(Heap& heap, Output& out);
+    // `inline_cache` is ladder rung 3e (notes §5): GET_GLOBAL and SET_GLOBAL remember where
+    // their global lives instead of hashing its name every time.
+    RegisterEngine(Heap& heap, Output& out, bool inline_cache = false);
     ~RegisterEngine() override;
 
     std::string_view name() const override { return "register"; }
@@ -75,6 +77,12 @@ private:
     enum class CallOutcome { Error, PushedFrame, NativeDone };
 
     bool execute(std::size_t stop_frames);
+    // The dispatch loop. Two instantiations, so a run without the inline cache executes the same
+    // instructions it did before the rung existed, with no test of the flag anywhere in it.
+    template <bool kInlineCache>
+    bool execute_loop(std::size_t stop_frames);
+    Value* find_global(ObjString* name);
+    void attach_global_caches(ObjFunction* function);
     CallOutcome call_value(Value* callee_slot, int argc);
     ObjUpvalue* capture_upvalue(Value* local);
     void close_upvalues(Value* last);
@@ -97,7 +105,13 @@ private:
     // Frames at the bottom that do not count as calls: 1 while the script runs, else 0.
     std::size_t uncounted_frames_ = 0;
     ObjUpvalue* open_upvalues_ = nullptr;  // sorted by register address, highest first
+    // The global variables. std::unordered_map never moves an element when the table grows (only
+    // its buckets are rehashed), so the address of a value here is a stable cell: the inline
+    // cache keeps `Value*` into this table and nothing ever has to invalidate it. Nothing erases
+    // a global either, and a name is in the table exactly when it is defined, so "the cell
+    // exists" and "the global is defined" are the same fact.
     std::unordered_map<ObjString*, Value> globals_;
+    bool inline_cache_;
     Value result_ = make_nil();  // what the entry frame returned; not rooted
     std::optional<RuntimeError> error_;
     RegVmCounters counters_;

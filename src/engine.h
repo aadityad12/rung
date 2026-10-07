@@ -54,9 +54,19 @@ public:
     virtual std::string stats_report() const { return {}; }
 };
 
+// Switches that change how an engine runs a program without changing what it computes. Each is
+// a ladder rung (notes D4), and an engine that does not have the rung refuses it.
+struct EngineOptions {
+    // Ladder rung 3e: GET_GLOBAL and SET_GLOBAL remember their global's storage cell. Register
+    // VM only.
+    bool inline_cache = false;
+};
+
 // Creates the engine called `name` ("tree", and later "stack", "register", "jit"), or null if
-// there is no such engine on this platform. Registers the engine's GC roots with `heap`.
-std::unique_ptr<Engine> make_engine(std::string_view name, Heap& heap, Output& out);
+// there is no such engine on this platform, or the engine lacks an option that is set. Registers
+// the engine's GC roots with `heap`.
+std::unique_ptr<Engine> make_engine(std::string_view name, Heap& heap, Output& out,
+                                    EngineOptions options = {});
 
 // The names make_engine accepts, for usage messages.
 std::vector<std::string_view> engine_names();
