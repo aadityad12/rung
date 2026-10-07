@@ -7,5 +7,7 @@
   {"id": "06_super", "label": "+ superinstructions", "preset": "release-goto-nanbox", "args": ["--engine=register", "--superinstructions"]},
   {"id": "07_ic", "label": "+ inline caching for globals", "preset": "release-goto-nanbox", "args": ["--engine=register", "--superinstructions", "--inline-cache"]},
   {"id": "08_fold", "label": "+ constant folding / dead-code elimination", "preset": "release-goto-nanbox", "args": ["--engine=register", "--superinstructions", "--inline-cache", "--fold"]},
-  {"id": "09_jit", "label": "+ baseline JIT", "preset": "release-goto-nanbox", "args": ["--engine=jit", "--superinstructions", "--inline-cache", "--fold"]}
+  {"id": "09_jit", "label": "+ baseline JIT", "preset": "release-goto-nanbox", "args": ["--engine=jit", "--superinstructions", "--inline-cache", "--fold"]},
+  {"id": "jit_sync", "label": "the JIT compiling on the engine's thread, row 09's arguments", "ladder": false, "preset": "release-goto-nanbox", "args": ["--engine=jit", "--superinstructions", "--inline-cache", "--fold"]},
+  {"id": "jit_background", "label": "the same with `--jit-background`", "ladder": false, "preset": "release-goto-nanbox", "args": ["--engine=jit", "--superinstructions", "--inline-cache", "--fold", "--jit-background"]}
 ]

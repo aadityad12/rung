@@ -36,11 +36,19 @@ RegisterEngine::RegisterEngine(Heap& heap, Output& out, bool inline_cache, bool 
 #if RUNG_JIT
 RegisterEngine::RegisterEngine(Heap& heap, Output& out, const EngineOptions& options)
     : RegisterEngine(heap, out, options.inline_cache, options.superinstructions) {
-    jit_ = std::make_unique<jit::Jit>(options.jit_threshold, options.jit_log);
+    jit_ = std::make_unique<jit::Jit>(options.jit_threshold, options.jit_log,
+                                      options.jit_background);
 }
 #endif
 
-RegisterEngine::~RegisterEngine() { heap_.remove_root_marker(root_handle_); }
+RegisterEngine::~RegisterEngine() {
+#if RUNG_JIT
+    // Join the compiler thread first (notes D8): a function it is still compiling stays a GC
+    // root only while this engine's root marker is registered.
+    if (jit_ != nullptr) jit_->shutdown();
+#endif
+    heap_.remove_root_marker(root_handle_);
+}
 
 // What the collector must keep alive (notes D10). The registers: every frame's window, which
 // together are one contiguous run from slot 0 (each window starts inside its caller's, or right
@@ -50,7 +58,8 @@ RegisterEngine::~RegisterEngine() { heap_.remove_root_marker(root_handle_); }
 // same). Slots above the run are stale (a returned callee's registers, possibly pointing at
 // objects already freed) and are never marked; they are overwritten before any frame reads them.
 // Then the closure of every frame, the open upvalues (reachable from nothing else until a closure
-// holds them), and the globals.
+// holds them), and the globals. With --jit-background, also every function the compiler thread
+// has queued or is reading (notes D8): one that became garbage meanwhile must outlive the read.
 void RegisterEngine::mark_roots(Heap& heap) {
     const Value* top = registers_ + 1;  // slot 0, the entry callee, is always valid
     for (std::size_t i = 0; i < frame_count_; ++i) {
@@ -64,6 +73,9 @@ void RegisterEngine::mark_roots(Heap& heap) {
         heap.mark_object(name);
         heap.mark_value(value);
     }
+#if RUNG_JIT
+    if (jit_ != nullptr) jit_->mark_pending(heap);
+#endif
 }
 
 // The error's line is the line of the instruction that failed: the loop's pc has already moved
@@ -254,13 +266,20 @@ std::string RegisterEngine::pair_report() const {
 
 // Hotness: one count per call and per loop back-edge (a backward JUMP), so a function that is
 // called rarely but loops a lot, like a benchmark's `run`, still gets hot. At the threshold the
-// function is compiled at once, on this thread. A back-edge cannot switch the running call into
-// machine code (that would be on-stack replacement, not built), so a function that becomes hot
-// inside a loop runs machine code from its next call. The top-level script is never compiled:
-// it runs once, so without on-stack replacement its machine code could never be entered.
+// function is compiled at once, on this thread, or with --jit-background handed to the compiler
+// thread while this one carries on in the VM (notes D8). A back-edge cannot switch the running
+// call into machine code (that would be on-stack replacement, not built), so a function that
+// becomes hot inside a loop runs machine code from its next call. The top-level script is never
+// compiled: it runs once, so without on-stack replacement its machine code could never be
+// entered.
 void RegisterEngine::jit_count(ObjFunction* function) {
     if (function->jit_status != JitStatus::Cold || function->name == nullptr) return;
-    if (++function->jit_hotness >= jit_->threshold()) jit_->compile(*function);
+    if (++function->jit_hotness < jit_->threshold()) return;
+    if (jit_->background()) {
+        jit_->enqueue(*function);
+    } else {
+        jit_->compile(*function);
+    }
 }
 
 // Called with the frame of `function` just pushed (pc at its first instruction). Counts the call
@@ -268,11 +287,17 @@ void RegisterEngine::jit_count(ObjFunction* function) {
 // place and returns the index of the instruction the VM resumes at: a RETURN if it ran to the
 // end (the VM performs the return), else the instruction whose guard failed, which the VM
 // executes itself, error and all. Returns the pc to continue from.
+//
+// The pointer is read here, in C++, with an acquire load that pairs with the compiler thread's
+// release store (notes D8), so ThreadSanitizer checks the handoff; the machine code itself never
+// reads anything the compiler thread writes.
 const Instruction* RegisterEngine::jit_frame_entry(ObjFunction* function, Value* base,
                                                    const Instruction* pc) {
     jit_count(function);
-    if (function->jit_entry == nullptr) return pc;
-    const std::uint32_t resume = function->jit_entry(base);
+    const JitEntry entry = function->jit_entry.load(std::memory_order_acquire);
+    if (entry == nullptr) return pc;
+    if (function->jit_status != JitStatus::Compiled) jit::Jit::adopt(*function, entry);
+    const std::uint32_t resume = entry(base);
     const Instruction* code = function->reg.code.data();
     RegOp op = insn_op(code[resume]);
     if (op != RegOp::Return && op != RegOp::ReturnNil) jit_->note_bailout(*function, resume);
