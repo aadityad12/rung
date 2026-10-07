@@ -267,7 +267,8 @@ class LadderTest(unittest.TestCase):
         write(os.path.join(self.root, "bench", "expected.json"),
               json.dumps({"beta": "1", "alpha": "2"}))
         write(os.path.join(self.root, "README.md"),
-              f"# T\n\n## Results\n\n{ladder.START_MARKER}\nstale\n{ladder.END_MARKER}\n\n"
+              f"# T\n\n{ladder.SUMMARY_START_MARKER}\nold\n{ladder.SUMMARY_END_MARKER}\n\n"
+              f"## Results\n\n{ladder.START_MARKER}\nstale\n{ladder.END_MARKER}\n\n"
               "## After\n")
 
     def readme(self):
@@ -303,6 +304,67 @@ class LadderTest(unittest.TestCase):
         self.assertTrue(text.endswith("## After\n"))
         self.assertIn("## Results\n\n" + ladder.START_MARKER + "\n_This section is generated",
                       text)
+
+    def test_summary(self):
+        self.fill()
+        self.assertEqual(run_main(ladder, ["--root", self.root])[0], 0)
+        text = self.readme()
+        start = text.index(ladder.SUMMARY_START_MARKER)
+        summary = text[start:text.index(ladder.SUMMARY_END_MARKER)]
+        # The first row above the baseline and the last measured row, each as a range with the
+        # benchmark at each end; noisy cells say so.
+        self.assertIn("`02_b` Faster: 2.00× (`alpha`) to 5.00× (`beta`) the speed of "
+                      "`01_a` Base.", summary)
+        self.assertIn("`03_c` Slower: 1.00× (`alpha`, †) to 5.00× (`beta`, †)", summary)
+        # The worst single-rung loss is always named.
+        self.assertIn("The largest loss from a single rung is `03_c` on `alpha`: 0.50×", summary)
+        self.assertIn("Fake CPU, FakeOS 1", summary)
+        self.assertNotIn("old", summary)
+
+    def test_summary_without_results_says_so(self):
+        self.assertEqual(run_main(ladder, ["--root", self.root])[0], 0)
+        self.assertIn("No speedups have been measured yet", self.readme())
+
+    def test_summary_hand_edit_fails_check(self):
+        self.fill()
+        run_main(ladder, ["--root", self.root])
+        write(os.path.join(self.root, "README.md"), self.readme().replace("5.00× (`beta`) the",
+                                                                          "6.00× (`beta`) the"))
+        code, _, err = run_main(ladder, ["--check", "--root", self.root])
+        self.assertEqual(code, 1)
+        self.assertIn("6.00", err)
+
+    def test_jit_rows_show_compile_time_and_mark_benchmarks_not_compiled(self):
+        configs = self.CONFIGS[:2] + [
+            {"id": "03_c", "label": "JIT", "preset": "release", "args": ["--engine=jit"]}]
+        write(os.path.join(self.root, "scripts", "ladder_configs.json"), json.dumps(configs))
+        write(os.path.join(self.root, "bench", "jit_not_compiled.json"),
+              json.dumps({"beta": "rejected for a reason"}))
+        self.fill()
+        path = os.path.join(self.root, "results", "03_c.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["config"] = configs[2]
+        data["benchmarks"]["alpha"]["jit_compile_ns_median"] = 2500.0   # of 10,000 ns in total
+        data["benchmarks"]["beta"]["jit_compile_ns_median"] = 0.38      # of 4,000 ns
+        write(path, json.dumps(data))
+        self.assertEqual(run_main(ladder, ["--root", self.root])[0], 0)
+        text = self.readme()
+        self.assertIn("**JIT compile time per process**", text)
+        # Compile time next to its share of the timed calls; tiny shares keep two significant
+        # figures instead of rounding to zero.
+        self.assertIn("| `03_c` JIT | 0.0 µs (0.0095%) ‡ | 2.5 µs (25%) |", text)
+        # Only the JIT row is marked, in every table.
+        self.assertIn("| `03_c` JIT | 5.00× † ‡ | 1.00× † |", text)
+        self.assertIn("| `02_b` Faster | 5.00× | 2.00× |", text)
+        self.assertIn("‡ marks a JIT row's cell", text)
+        self.assertIn("`beta`: rejected for a reason", text)
+
+    def test_no_compile_time_table_without_jit_results(self):
+        self.fill()
+        self.assertEqual(run_main(ladder, ["--root", self.root])[0], 0)
+        self.assertNotIn("JIT compile time", self.readme())
+        self.assertNotIn("‡", self.readme())
 
     def test_check_passes_when_current_and_fails_after_hand_edit(self):
         self.fill()

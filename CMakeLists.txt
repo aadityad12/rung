@@ -270,6 +270,11 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
     add_test(NAME pair-counts-fused
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/pair_counts.py
               --rung $<TARGET_FILE:rung> --superinstructions --check)
+    # The same for docs/instruction_counts.txt, the per-benchmark dispatch counts of both VMs
+    # that notes section 5 uses to explain the ladder (issue #13).
+    add_test(NAME instruction-counts
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/instruction_counts.py
+              --rung $<TARGET_FILE:rung> --check)
   endif()
 
   add_test(NAME bench-cli
@@ -307,6 +312,11 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
       add_test(NAME bench-check-jit-all-rungs
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
                 --rung $<TARGET_FILE:rung> --engine jit --superinstructions --inline-cache)
+      # The README marks the JIT row's cells for benchmarks the JIT compiles nothing in
+      # (bench/jit_not_compiled.json); this checks that list against --jit-log (issue #24).
+      add_test(NAME bench-jit-coverage
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_jit_coverage_check.py
+                --rung $<TARGET_FILE:rung>)
     endif()
   endif()
 

@@ -1,0 +1,7 @@
+{
+  "fib": "`fib` is rejected (it calls itself through the global `fib`), and `run` is called only 20 times, below the threshold",
+  "sieve": "`run` is rejected (it calls the global `array`)",
+  "nbody": "`root` is rejected (a float constant), `advance` and `run` (globals)",
+  "strcat": "`run` is rejected (a string constant)",
+  "closures": "`run` is rejected (a global), `make_adder` (it creates a closure), `add` and `next` (captured variables)"
+}
