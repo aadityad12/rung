@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [debug, release, asan, tsan]
+        preset: [debug, release, asan, asan-goto, tsan]
     steps:
       - uses: actions/checkout@v5
       - name: Install Ninja
@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [debug, release, asan, tsan]
+        preset: [debug, release, asan, asan-goto, tsan]
     steps:
       - uses: actions/checkout@v5
       - name: Install toolchain
