@@ -892,9 +892,9 @@ How D5's noise control became code, and the choices D5 left open:
   There are 40 branches for 36 opcodes: the compiler made a few extra copies of the dispatch
   tail (which handlers got them was not traced). Either way the shared branch is gone, so the
   mechanism the rung claims is present in the generated code.
-- **Measured.** Not yet. The measurement needs the benchmark harness and an exclusive machine
-  (D5), so the speedup, the row in the results table and the explanation are still to be filled
-  in here.
+- **Measured.** Not yet. Row `03_goto` (`release-goto`, `--engine=stack`) is in
+  `scripts/ladder_configs.json`, but measuring it needs an exclusive machine (D5), so the
+  speedup, the row in the results table and the explanation are still to be filled in here.
 - **Handlers cannot jump out of a destructor's scope.** `goto *` may not leave the scope of a
   variable with a destructor, so handlers that use `std::string` or `std::vector` keep them in an
   inner block that closes before `RUNG_NEXT()`. The `switch` build never needed this.
@@ -916,9 +916,9 @@ How D5's noise control became code, and the choices D5 left open:
   address-space reservation drops from 16 to 8 bytes a slot; pages are only touched as the
   stack grows, so resident memory changes only for deep recursion. Array element buffers and
   constant tables also halve. Peak RSS per benchmark comes from the results JSON once measured.
-- **Measured.** Not yet. Row `04_nanbox` needs the benchmark harness (`scripts/bench.py`,
-  `ladder_configs.json`), which is not in the repository yet, and an exclusive machine (D5).
-  Expected versus measured, value-stack bytes and peak RSS are to be filled in here then.
+- **Measured.** Not yet. Row `04_nanbox` (`release-goto-nanbox`, `--engine=stack`) is in
+  `scripts/ladder_configs.json`, but measuring it needs an exclusive machine (D5). Expected
+  versus measured, value-stack bytes and peak RSS are to be filled in here then.
 
 ### Ladder rung 3c: register VM
 
@@ -984,9 +984,8 @@ How D5's noise control became code, and the choices D5 left open:
   Programs dominated by arithmetic on locals (`gcd_and_collatz`) lose the most; ones dominated
   by calls and closures (`accumulator_generator`) the least, since a call still costs a
   `GET_GLOBAL` or `GET_UPVALUE`, argument moves and the `CALL` itself.
-- **Measured.** Not yet. Row `05_register` (`release-goto-nanbox`, `--engine=register`) needs the
-  benchmark harness (`scripts/bench.py`), which is not in the repository yet, and an exclusive
-  machine (D5). The time per benchmark, the instructions dispatched per benchmark for both VMs,
+- **Measured.** Not yet. Row `05_register` (`release-goto-nanbox`, `--engine=register`) is in
+  `scripts/ladder_configs.json`, but measuring it needs an exclusive machine (D5). The time per benchmark, the instructions dispatched per benchmark for both VMs,
   and the explanation of any difference from the expectation are to be filled in here then. If
   the register VM turns out slower, count instructions per benchmark before profiling (spec §13).
 
@@ -1104,12 +1103,11 @@ How D5's noise control became code, and the choices D5 left open:
 - **What the ladder rows must pass.** D4 makes the ladder cumulative, so `--superinstructions`
   belongs in the arguments of every row from 06 on: `06_super` is
   `--engine=register --superinstructions`, `07_ic` is `--engine=register --superinstructions
-  --inline-cache`, and `08_fold`, the only one of these in `scripts/ladder_configs.json` (with
-  `--engine=register --fold`), needs `--superinstructions --inline-cache --fold` before it is
-  measured, or it would measure folding without the two rungs below it. Rows 02 to 07 are not in
-  the file yet and the arguments of `08_fold` were not changed here, for the reason given under
-  rung 3e (adding them now would make the table compare the new rows with the tree-walker). The
-  three flags compose, and the suite runs with all three at once
+  --inline-cache`, and `08_fold` is `--engine=register --superinstructions --inline-cache
+  --fold`, or it would measure folding without the two rungs below it. All of these rows are in
+  `scripts/ladder_configs.json` (the arguments of `08_fold` gained the two earlier flags when
+  rows 02 to 07 were added), and `tests/test_bench_scripts.py` checks that the file is exactly
+  this cumulative ladder. The three flags compose, and the suite runs with all three at once
   (`conformance-register-all-rungs`).
 - **For later rungs.** The JIT (D3) compiles register bytecode, so with this flag on it sees fused
   words: it must treat a fused word as its two halves (`fused_first`, `fused_second` and the next
@@ -1184,12 +1182,11 @@ How D5's noise control became code, and the choices D5 left open:
   machine (D5). Time per benchmark and the explanation of any difference from the expectation
   are to be filled in here then.
 - **What the ladder rows must pass.** D4 makes the ladder cumulative, so `--inline-cache` belongs
-  in the arguments of every row from 07 on. `scripts/ladder_configs.json` has no `07_ic` row yet
-  (rows 02 to 07 are added as they are measured), but it does have `08_fold`, whose arguments
-  are `--engine=register --fold`: that row must gain `--inline-cache` (and the superinstruction
-  flag, rung 3d) before it is measured, or it would measure folding without the rung below it.
-  The measured rows were not touched in this change. `--fold` and `--inline-cache` compose, and
-  the conformance suite runs with both at once (`conformance-register-fold-inline-cache`).
+  in the arguments of every row from 07 on. `scripts/ladder_configs.json` has `07_ic`
+  (`--engine=register --superinstructions --inline-cache`), and `08_fold` and `09_jit` carry the
+  flag too, so no row measures folding or the JIT without the rungs below it. `--fold` and
+  `--inline-cache` compose, and the conformance suite runs with both at once
+  (`conformance-register-fold-inline-cache`).
 - **For later rungs.** An instruction that fuses a global access (a superinstruction, rung 3d)
   must keep the rule "the slot at this instruction's own index is this instruction's", and the
   JIT can embed the cell address a cache slot holds instead of looking the name up (D7's
@@ -1273,12 +1270,11 @@ How D5's noise control became code, and the choices D5 left open:
   `advance`, so none of them is in a hot loop. No measurable change in the timed work is
   expected for any of the six, and a row that shows one is noise or an effect to be explained,
   not a result of the pass.
-- **Measured.** Not yet. Row `08_fold` (`release-goto-nanbox`, `--engine=register --fold`) is
-  in `scripts/ladder_configs.json`, but measuring it needs an exclusive machine (D5), so there is
-  no `results/08_fold.json` yet. The times, and the explanation of any difference from the
-  above, are to be filled in here then. The row's arguments are only what this rung adds; D4
-  makes the ladder cumulative, so they gain the flags of rungs 3d and 3e (superinstructions,
-  inline caching) when those land and before 08 is measured.
+- **Measured.** Not yet. Row `08_fold` (`release-goto-nanbox`, `--engine=register
+  --superinstructions --inline-cache --fold`: D4 is cumulative, so it carries the flags of rungs
+  3d and 3e) is in `scripts/ladder_configs.json`, but measuring it needs an exclusive machine
+  (D5), so there is no `results/08_fold.json` yet. The times, and the explanation of any
+  difference from the above, are to be filled in here then.
 
 ### Engine 4: baseline JIT
 
