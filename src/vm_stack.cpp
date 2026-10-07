@@ -258,6 +258,12 @@ StackEngine::CallOutcome StackEngine::call_value(int argc) {
 #define READ_OP() static_cast<OpCode>(READ_BYTE())
 #endif
 
+#define RUNG_FETCH() READ_OP()
+#define RUNG_COUNT_OP_(op) +1
+static_assert(kOpCodeCount == 0 RUNG_OPCODE_LIST(RUNG_COUNT_OP_),
+              "RUNG_OPCODE_LIST in vm/dispatch.h must list every OpCode, in enum order");
+#undef RUNG_COUNT_OP_
+
 // Runs until the frame count drops back to `stop_frames` (the entry frame returned) or a
 // runtime error happens. Returns true with the entry frame's result in result_, or false with
 // error_ set (the caller unwinds, see take_error). The entry frame must already be pushed.
@@ -270,7 +276,7 @@ bool StackEngine::execute(std::size_t stop_frames) {
     Value* sp = sp_;
     LOAD_FRAME();
 
-    RUNG_DISPATCH(READ_OP())
+    RUNG_DISPATCH()
 
     RUNG_CASE(Const) {
         *sp++ = constants[READ_U24()];
@@ -388,11 +394,16 @@ bool StackEngine::execute(std::size_t stop_frames) {
         sp[-1] = make_bool(!values_equal(sp[-1], sp[0]));
         RUNG_NEXT();
     }
+    // A handler's locals with destructors (std::string, std::vector) sit in an inner block that
+    // closes before RUNG_NEXT(): a computed `goto *` may not jump out of such a variable's
+    // scope, and the switch build would compile either way.
     RUNG_CASE(Neg) {
-        Value result;
-        std::string error;
-        if (!op_negate(sp[-1], &result, &error)) FAIL(std::move(error));
-        sp[-1] = result;
+        {
+            Value result;
+            std::string error;
+            if (!op_negate(sp[-1], &result, &error)) FAIL(std::move(error));
+            sp[-1] = result;
+        }
         RUNG_NEXT();
     }
     RUNG_CASE(Not) {
@@ -462,10 +473,12 @@ bool StackEngine::execute(std::size_t stop_frames) {
     }
 
     RUNG_CASE(Print) {
-        std::string text;
-        print_value(sp[-1], text);
-        text += '\n';
-        out_.write(text);
+        {
+            std::string text;
+            print_value(sp[-1], text);
+            text += '\n';
+            out_.write(text);
+        }
         --sp;
         RUNG_NEXT();
     }
@@ -473,23 +486,30 @@ bool StackEngine::execute(std::size_t stop_frames) {
         std::uint32_t count = READ_U24();
         SAVE_STATE();
         // The elements stay on the stack (rooted) while the array is allocated.
-        std::vector<Value> elements(sp - count, sp);
-        ObjArray* array = heap_.allocate<ObjArray>(std::move(elements));
+        ObjArray* array;
+        {
+            std::vector<Value> elements(sp - count, sp);
+            array = heap_.allocate<ObjArray>(std::move(elements));
+        }
         sp -= count;
         *sp++ = make_obj(array);
         RUNG_NEXT();
     }
     RUNG_CASE(IndexGet) {
-        Value result;
-        std::string error;
-        if (!array_get(sp[-2], sp[-1], &result, &error)) FAIL(std::move(error));
-        --sp;
-        sp[-1] = result;
+        {
+            Value result;
+            std::string error;
+            if (!array_get(sp[-2], sp[-1], &result, &error)) FAIL(std::move(error));
+            --sp;
+            sp[-1] = result;
+        }
         RUNG_NEXT();
     }
     RUNG_CASE(IndexSet) {
-        std::string error;
-        if (!array_set(sp[-3], sp[-2], sp[-1], &error)) FAIL(std::move(error));
+        {
+            std::string error;
+            if (!array_set(sp[-3], sp[-2], sp[-1], &error)) FAIL(std::move(error));
+        }
         sp -= 2;
         sp[-1] = sp[1];
         RUNG_NEXT();
@@ -504,6 +524,7 @@ bool StackEngine::execute(std::size_t stop_frames) {
 #undef LOAD_FRAME
 #undef FAIL
 #undef READ_OP
+#undef RUNG_FETCH
 #undef BINARY_OP
 
 }  // namespace rung

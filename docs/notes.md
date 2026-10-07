@@ -571,6 +571,60 @@ crash and its cause.
   one to one** (D11): a block that declares nothing still creates one, because the resolver
   counted it when it computed `hops`. This is the cost the later engines remove.
 
+### Ladder rung 3a: computed-goto dispatch
+
+- **What changed.** `RUNG_COMPUTED_GOTO` (CMake option, default OFF; presets `release-goto` and
+  `asan-goto`) makes the macros in `src/vm/dispatch.h` expand to a table of label addresses and a
+  `goto *table[opcode]` at the end of every handler, instead of one `switch`. The loop body in
+  `vm_stack.cpp` is the same text in both builds. Only `vm_stack.cpp` is compiled with
+  `-Wno-gnu-label-as-value`.
+- **Expected.** One shared indirect branch becomes one per handler, which gives the branch
+  predictor a separate history per opcode. A real gain is plausible, but modern predictors
+  (Apple's included) predict a single indirect branch well from global history, so a small gain
+  is also plausible and would be a legitimate finding.
+- **What the disassembly shows** (`otool -tvV` on the `release` and `release-goto` binaries,
+  looking at `StackEngine::execute`, which has 36 opcodes):
+
+  | Build | `br xN` in `execute` |
+  |---|---|
+  | `release` (switch) | 1 |
+  | `release-goto` | 40 |
+
+  The switch build has a single `br x9`, reached from every handler through the loop's top: it
+  bounds-checks the opcode (`cmp w8, #0x23`), loads a 2-byte offset from a jump table, adds it to
+  a base and branches:
+
+  ```
+  ldrb  w8, [x26], #0x1        ; fetch opcode
+  cmp   w8, #0x23              ; bounds check (36 opcodes)
+  b.hi  ...
+  adrp/add x11 ...             ; jump table
+  ldrh  w10, [x11, x8, lsl #1]
+  add   x9, x9, x10, lsl #2
+  br    x9                     ; the one shared indirect branch
+  ```
+
+  The goto build repeats this at the end of each handler, with no bounds check and an 8-byte
+  address table:
+
+  ```
+  ldrb  w9, [x27]              ; fetch opcode
+  mov   x27, x8                ; ip advanced
+  adrp/add x8 ...              ; dispatch table
+  ldr   x8, [x8, x9, lsl #3]
+  br    x8                     ; this handler's own indirect branch
+  ```
+
+  There are 40 branches for 36 opcodes: the compiler made a few extra copies of the dispatch
+  tail (which handlers got them was not traced). Either way the shared branch is gone, so the
+  mechanism the rung claims is present in the generated code.
+- **Measured.** Not yet. The measurement needs the benchmark harness and an exclusive machine
+  (D5), so the speedup, the row in the results table and the explanation are still to be filled
+  in here.
+- **Handlers cannot jump out of a destructor's scope.** `goto *` may not leave the scope of a
+  variable with a destructor, so handlers that use `std::string` or `std::vector` keep them in an
+  inner block that closes before `RUNG_NEXT()`. The `switch` build never needed this.
+
 ### JIT crashes and their causes
 
 - **Intermittent SEGV calling freshly written code, Linux arm64, asan preset only (about 5% of

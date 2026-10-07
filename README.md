@@ -40,7 +40,8 @@ print, error messages and exit codes) are in [`docs/notes.md`](docs/notes.md), Â
 Needs CMake 3.25+, Ninja, and Clang with C++20.
 
 ```sh
-cmake --preset debug          # also: release, asan (Address + UB sanitizers), tsan, fuzz
+cmake --preset debug          # also: release, asan (Address + UB sanitizers), tsan, fuzz,
+                                # release-goto and asan-goto (computed-goto dispatch)
 cmake --build --preset debug
 ctest --preset debug
 ./build/debug/rung examples/hello.rg          # runs on the tree-walker (--engine=tree)
