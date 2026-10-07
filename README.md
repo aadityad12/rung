@@ -12,8 +12,9 @@ every speedup measured on its own:
 
 The name comes from the results table: each row is one rung of the ladder.
 
-> **Status: under construction.** The tree-walking interpreter, the stack VM and the register
-> VM run Rung programs and pass the conformance suite. The other engines are not built yet. Every number
+> **Status: under construction.** The tree-walking interpreter, the stack VM, the register VM
+> and the baseline JIT (arm64 only) run Rung programs and pass the conformance suite.
+> Background compilation is not built yet. Every number
 > that ends up in this README will come from a committed file in `results/` produced by a
 > script. None are hand-written.
 
@@ -50,6 +51,11 @@ ctest --preset debug
 ./build/debug/rung --engine=register --stats examples/hello.rg   # register VM, same counters
 ./build/debug/rung --engine=register --inline-cache --stats examples/hello.rg   # globals without hash lookups
 ./build/debug/rung --engine=register --superinstructions --stats=pairs examples/hello.rg   # fused pairs; which opcode follows which
+# The JIT needs an arm64 CPU and NaN-boxed values, so a *-nanbox preset on an arm64 machine:
+cmake --preset release-goto-nanbox && cmake --build --preset release-goto-nanbox
+./build/release-goto-nanbox/rung --engine=jit --jit-log tests/conformance/jit/loop_sum.rg
+#   --jit-log: each compile, rejection and bail-out to stderr; --jit-threshold=N (default 1000):
+#   calls plus loop back-edges before a function is compiled
 ./build/debug/rung --gc-stress --stats examples/hello.rg   # collect on every allocation; heap stats
 ./build/debug/rung --engine=register --fold --stats examples/hello.rg   # constant folding + dead-code removal
 ./build/debug/rung --dump-tokens examples/hello.rg
@@ -80,15 +86,21 @@ Five layers, each catching something the others cannot:
    [`tests/conformance/README.md`](tests/conformance/README.md). `ctest` runs it once per
    engine, and once more per engine with `--gc-stress` (`conformance-tree`,
    `conformance-tree-gc-stress`, `conformance-stack`, `conformance-stack-gc-stress`,
-   `conformance-register`, `conformance-register-gc-stress`), and once more per engine with
-   `--fold` (`conformance-<engine>-fold`; the register VM also with `--gc-stress`), since
-   folding must not change what any program does, and the register VM once more with
-   `--inline-cache` (`conformance-register-inline-cache`, and with `--gc-stress`), and once more with
+   `conformance-register`, `conformance-register-gc-stress`, `conformance-jit`,
+   `conformance-jit-gc-stress`), and once more per engine with `--fold`
+   (`conformance-<engine>-fold`; the register VM also with `--gc-stress`), since folding must not
+   change what any program does, and the register VM once more with `--inline-cache`
+   (`conformance-register-inline-cache`, and with `--gc-stress`), and once more with
    `--superinstructions` (`conformance-register-superinstructions`, with `--gc-stress`, and with
-   all the register-VM rungs on at once as `conformance-register-all-rungs`).
+   all the register-VM rungs on at once as `conformance-register-all-rungs`). The JIT runs the
+   suite with `--jit-threshold=1`, so every function the JIT can compile is compiled on its first
+   call, also with `--superinstructions` and with every rung on (`conformance-jit-fold`,
+   `conformance-jit-superinstructions`, `conformance-jit-all-rungs`); in a build without the JIT
+   they are reported as skipped.
 2. **Unit tests** (`tests/unit/`, [doctest](https://github.com/doctest/doctest)). Each C++
    module on its own: the lexer, parser, resolver, runtime and GC, the tree-walker, both
-   compilers and both VMs, and the ARM64 encoder (checked byte for byte against LLVM).
+   compilers and both VMs, the ARM64 encoder (checked byte for byte against LLVM), and the
+   JIT's whitelist and generated code (run directly on a register file).
    `ctest --preset debug` runs them.
 3. **Sanitizers.** The `asan` preset builds everything with AddressSanitizer and
    UndefinedBehaviorSanitizer, and `tsan` with ThreadSanitizer (for the background JIT thread).

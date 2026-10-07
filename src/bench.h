@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -28,9 +29,12 @@ BenchResult run_bench(Engine& engine, std::size_t iterations);
 void set_benchmark_thread_qos();
 
 // Renders the JSON file bench mode writes: engine name, per-iteration times, the result, and the
-// heap statistics (which are cheap and useful for the allocation-heavy benchmarks).
+// heap statistics (which are cheap and useful for the allocation-heavy benchmarks). An engine with
+// a JIT also reports `jit_compile_ns`, the total time it spent compiling during the whole process
+// (top level and every iteration; notes D16), so a speedup can be shown next to what it cost.
 std::string bench_json(std::string_view engine_name, const BenchResult& bench,
-                       const HeapStats& heap_stats);
+                       const HeapStats& heap_stats,
+                       std::optional<std::uint64_t> jit_compile_ns = std::nullopt);
 
 // Quotes and escapes `text` as a JSON string.
 std::string json_quote(std::string_view text);
