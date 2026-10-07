@@ -205,6 +205,11 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_cli_check.py
             --rung $<TARGET_FILE:rung>)
 
+  # scripts/bench.py and scripts/ladder.py against a fake rung and fixture results (issue #8),
+  # plus the check that the README table matches results/. No timing is measured.
+  add_test(NAME bench-scripts
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_bench_scripts.py)
+
   # Benchmark checksums (issue #7): every benchmark once on every engine. Release only: the
   # full-size benchmarks take seconds when optimised and many minutes under -O0 or a sanitizer.
   # This checks results, never timings (notes D5).

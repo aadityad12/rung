@@ -1,8 +1,9 @@
 # Linux x86-64 build and test environment (docs/notes.md D6). Used by CI; also runs locally with
 #   docker build -t rung . && docker run --rm rung
+# git is for tests/test_bench_scripts.py, which builds throwaway repositories.
 FROM ubuntu:24.04
 RUN apt-get update \
- && apt-get install -y --no-install-recommends clang cmake ninja-build python3 \
+ && apt-get install -y --no-install-recommends clang cmake ninja-build python3 git \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /rung
 COPY . .

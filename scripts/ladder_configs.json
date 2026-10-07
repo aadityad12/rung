@@ -1,0 +1,3 @@
+[
+  {"id": "01_tree", "label": "Tree-walker", "preset": "release", "args": ["--engine=tree"]}
+]
