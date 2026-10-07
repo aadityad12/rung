@@ -224,8 +224,8 @@ int main(int argc, char** argv) {
         print_usage();
         return kExitUsage;
     }
-    // --dump-bytecode needs only a compiler, not a runnable engine, so it also accepts the
-    // bytecode formats whose engines do not exist yet. "tree" (the default) dumps stack bytecode.
+    // --dump-bytecode needs only a compiler, not a runnable engine, so it accepts every bytecode
+    // format even where its engine is unavailable. "tree" (the default) dumps stack bytecode.
     std::vector<std::string_view> engines = rung::engine_names();
     bool runnable = std::find(engines.begin(), engines.end(), options.engine) != engines.end();
     bool has_compiler = options.engine == "stack" || options.engine == "register";
