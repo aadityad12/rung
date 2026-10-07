@@ -8,6 +8,9 @@
 
 namespace rung {
 
+// The disassembly name of an opcode (`GET_LOCAL`); the VM's instruction counters use it too.
+const char* opcode_name(OpCode op);
+
 // Human-readable bytecode for `--dump-bytecode` and the compiler tests. Every function gets a
 // header line, then one row per instruction:
 //

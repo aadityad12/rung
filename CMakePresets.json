@@ -15,7 +15,7 @@
       "name": "debug",
       "displayName": "Debug",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "RUNG_VM_COUNTERS": "ON" }
     },
     {
       "name": "release",
@@ -29,7 +29,8 @@
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "RUNG_SANITIZE": "address,undefined"
+        "RUNG_SANITIZE": "address,undefined",
+        "RUNG_VM_COUNTERS": "ON"
       }
     },
     {
@@ -47,7 +48,8 @@
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "RUNG_SANITIZE": "thread"
+        "RUNG_SANITIZE": "thread",
+        "RUNG_VM_COUNTERS": "ON"
       }
     }
   ],

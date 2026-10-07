@@ -66,7 +66,10 @@ enum class OpCode : std::uint8_t {
     IndexSet,      //                  pop value, index, array; array[index] = value; push value
 };
 
-constexpr std::uint32_t kMaxU24 = 0xFFFFFFu;
+// How many opcodes there are (IndexSet is the last), for tables indexed by opcode.
+constexpr std::size_t kOpCodeCount = static_cast<std::size_t>(OpCode::IndexSet) + 1;
+
+constexpr std::uint32_t kMaxU24= 0xFFFFFFu;
 
 inline void put_u24(std::uint8_t* p, std::uint32_t v) {
     p[0] = static_cast<std::uint8_t>(v >> 16);

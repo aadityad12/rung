@@ -13,9 +13,7 @@
 
 namespace rung {
 
-namespace {
-
-const char* op_name(OpCode op) {
+const char* opcode_name(OpCode op) {
     switch (op) {
         case OpCode::Const: return "CONST";
         case OpCode::Nil: return "NIL";
@@ -56,6 +54,8 @@ const char* op_name(OpCode op) {
     }
     return "UNKNOWN";
 }
+
+namespace {
 
 std::string quoted(std::string_view s) {
     std::string out = "\"";
@@ -105,7 +105,7 @@ void row_start(std::string& out, const Chunk& chunk, std::size_t offset, const c
 std::size_t disassemble_instruction(const Chunk& chunk, std::size_t offset, std::string& out) {
     const std::vector<std::uint8_t>& code = chunk.code;
     auto op = static_cast<OpCode>(code[offset]);
-    const char* name = op_name(op);
+    const char* name = opcode_name(op);
 
     // An instruction whose operand bytes run past the end can only come from a bug in the
     // compiler; say so instead of reading out of bounds.

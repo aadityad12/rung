@@ -1,0 +1,117 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+
+#include "bytecode/chunk.h"
+#include "engine.h"
+#include "runtime/function.h"
+#include "runtime/ops.h"
+
+// RUNG_VM_COUNTERS is set by CMake (ON in the debug, asan and tsan presets, OFF in release).
+// When it is 0 the counting code is not compiled at all (notes D5).
+#ifndef RUNG_VM_COUNTERS
+#define RUNG_VM_COUNTERS 0
+#endif
+
+namespace rung {
+
+// What the VM counted while it ran (notes D5): instructions dispatched per opcode, and calls.
+// The struct always exists so the engine's layout does not depend on the build flag; only the
+// code that updates it does.
+struct VmCounters {
+    std::array<std::uint64_t, kOpCodeCount> by_opcode{};
+    std::uint64_t rung_calls = 0;    // calls that pushed a frame
+    std::uint64_t native_calls = 0;  // calls to array, len and clock
+
+    std::uint64_t instructions() const {
+        std::uint64_t total = 0;
+        for (std::uint64_t n : by_opcode) total += n;
+        return total;
+    }
+};
+
+// Engine 2b: executes the stack bytecode that compile_stack produces (notes D12). A bytecode
+// dispatch loop with a value stack and call frames, following clox in Crafting Interpreters
+// (chapters 15, 24 and 25: the loop, calls and returns, closures and upvalues). Not followed
+// from clox: the fixed-size stack and the 10,000-frame limit (below), the counters, the
+// dispatch macros, and getting every arithmetic, comparison, printing and error-message rule
+// from src/runtime/ops.h rather than writing it in the loop.
+class StackEngine final : public Engine {
+public:
+    StackEngine(Heap& heap, Output& out);
+    ~StackEngine() override;
+
+    std::string_view name() const override { return "stack"; }
+    EngineResult run(const Program& program) override;
+    CallResult call_global(std::string_view name) override;
+    std::string stats_report() const override;
+
+    const VmCounters& counters() const { return counters_; }
+
+private:
+    // Value stack allocation (notes D4, issue #11). Open upvalues are raw pointers into the
+    // stack, so the stack must never move. We allocate it once, at its maximum size, and never
+    // grow it: room for 10,000 frames of 256 slots each (a frame holds slot 0 plus at most 255
+    // locals, notes D11) plus kTempSlack extra slots for the temporaries an expression pushes.
+    // That is 16 bytes x 6,754,304 slots = about 103 MiB of address space, but the array is
+    // not initialised, so the operating system hands out pages only as the stack is first
+    // touched: a program that never recurses deeply touches a few kilobytes. The alternative,
+    // index-based upvalues on a std::vector that can grow, costs an add on every captured-
+    // variable access and changes ObjUpvalue, which the later ladder rungs share.
+    //
+    // The price is a bound on temporaries. A call fails with `stack overflow` when fewer than
+    // kFrameSlots + kTempSlack slots remain, so the temporaries of the running function (call
+    // arguments, array-literal elements, pending operands) can use up to kTempSlack slots
+    // without a per-push check. Reaching that limit takes an array literal of millions of
+    // elements, or nesting far past what the front end allows, at the very deepest frame.
+    static constexpr std::size_t kFrameSlots = 256;
+    static constexpr std::size_t kTempSlack = std::size_t{1} << 22;
+    static constexpr std::size_t kStackSlots =
+        static_cast<std::size_t>(kMaxCallDepth) * kFrameSlots + kTempSlack;
+    // One extra frame for the top-level script, which does not count towards the limit (§2.4).
+    static constexpr std::size_t kMaxFrames = static_cast<std::size_t>(kMaxCallDepth) + 1;
+
+    struct CallFrame {
+        ObjClosure* closure;
+        const std::uint8_t* ip;  // saved while another frame runs; the loop keeps it in a local
+        Value* base;             // slot 0: the closure being run; locals follow
+    };
+
+    enum class CallOutcome { Error, PushedFrame, NativeDone };
+
+    bool execute(std::size_t stop_frames);
+    CallOutcome call_value(int argc);
+    ObjUpvalue* capture_upvalue(Value* local);
+    void close_upvalues(Value* last);
+    void fail(std::string message);
+    std::optional<RuntimeError> take_error();
+    void mark_roots(Heap& heap);
+    void push(Value v) { *sp_++ = v; }
+
+    Heap& heap_;
+    Output& out_;
+    Heap::RootHandle root_handle_;
+
+    std::unique_ptr<Value[]> stack_storage_;  // never value-initialised, see above
+    Value* stack_;                            // first slot
+    Value* sp_;                               // next free slot; saved from the loop's local
+    Value* call_limit_;                       // a call needs this many free slots (see above)
+    std::unique_ptr<CallFrame[]> frames_;
+    std::size_t frame_count_ = 0;
+    // Frames at the bottom that do not count as calls: 1 while the script runs, else 0.
+    std::size_t uncounted_frames_ = 0;
+    ObjUpvalue* open_upvalues_ = nullptr;  // sorted by stack address, highest first
+    std::unordered_map<ObjString*, Value> globals_;
+    Value result_ = make_nil();  // what the entry frame returned; not rooted
+    std::optional<RuntimeError> error_;
+    VmCounters counters_;
+};
+
+}  // namespace rung
