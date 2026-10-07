@@ -675,6 +675,33 @@ The fuzz target's 4096-byte input cap existed only because of this question and 
 For each rung: what was expected, what was measured, why they differed. For the JIT: every
 crash and its cause.
 
+### The measurement pipeline (`scripts/bench.py`, `scripts/ladder.py`)
+
+How D5's noise control became code, and the choices D5 left open:
+
+- **`--runs 11` means 11 rounds, the first discarded**, which gives D5's "at least 10 runs, first
+  discarded": 10 measured runs per (config, benchmark). Each run is one fresh process calling
+  `run()` `--iterations` (20) times; its *total* is the sum of those calls.
+- **Interleaving is per round, not per config.** Every round runs all (config, benchmark) pairs
+  once in an order shuffled by a recorded seed (default 1), so no pair is always first or last
+  and a burst of background load is spread over all of them. Same seed, same order.
+- **Statistics.** Median and IQR (Q3 - Q1, inclusive quartiles) of the 10 per-run totals decide
+  the speedups and the `noisy` flag (IQR above 5% of the median, D5). p50, p99 and max are
+  nearest-rank over all 200 per-call times pooled across runs, so they are always an observed
+  time, never an interpolation.
+- **Speedups compare per-call times** (median total divided by the iteration count), so results
+  taken with different `--iterations` still compare. Cells are shown to two decimals, because
+  one decimal would display a 3% loss as `1.0x`. A ratio below 1.0 is marked `▼`; a cell whose
+  config, or the config it is compared with, was noisy is marked `†`.
+- **The README table is generated and checked.** `ladder.py` rewrites only the text between the
+  `ladder:start` and `ladder:end` markers; `ladder.py --check` (a CI job) regenerates it and
+  fails on any difference, so a hand edit, or a results file changed without regenerating, fails
+  the build.
+- **A results file is one invocation.** Running a subset of benchmarks replaces the whole file
+  for that config (the change report names anything dropped), because mixing benchmarks measured
+  at different times would defeat the interleaving.
+- **Dirty-tree check ignores `results/`**, since earlier invocations write there.
+
 ### Engine 1: tree-walker
 
 - **Expected:** the slowest engine and the baseline every later number is measured against. It

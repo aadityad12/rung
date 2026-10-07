@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""Tests for scripts/bench.py and scripts/ladder.py (issue #8).
+
+None of these measure anything real: bench.py is driven against a fake `rung` that reports
+made-up, fixed iteration times, so the pipeline's logic (statistics, interleaving, the dirty-tree
+refusal, result checking, the README table and --check) is tested without a quiet machine.
+
+    python3 tests/test_bench_scripts.py
+"""
+import contextlib
+import io
+import json
+import os
+import random
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+
+import bench  # noqa: E402
+import ladder  # noqa: E402
+
+FAKE_RUNG = f"""#!{sys.executable}
+import json, os, sys
+opts = dict(a.split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
+source = sys.argv[-1]
+expected = json.load(open(os.path.join(os.path.dirname(source), "expected.json")))
+name = os.path.basename(source)[:-3]
+result = expected[name] if opts.get("--fake-result") is None else opts["--fake-result"]
+ns = int(opts.get("--fake-ns", "1000"))
+json.dump({{"engine": opts.get("--engine", "?"), "iterations_ns": [ns] * int(opts["--bench"]),
+          "result": result, "heap": {{"collections": 0}}}}, open(opts["--bench-out"], "w"))
+"""
+
+
+def run_main(module, argv):
+    """Runs module.main(argv) and returns (exit code, stdout, stderr)."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = module.main(argv)
+    return code, out.getvalue(), err.getvalue()
+
+
+def git(root, *args):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=root,
+                   check=True, capture_output=True)
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+class StatisticsTest(unittest.TestCase):
+    def test_median_and_iqr(self):
+        self.assertEqual(bench.median([5, 1, 3]), 3)
+        self.assertEqual(bench.iqr([1, 2, 3, 4, 5]), 2)  # Q1 = 2, Q3 = 4
+        self.assertEqual(bench.iqr([7]), 0)
+
+    def test_percentile_is_nearest_rank(self):
+        values = list(range(1, 201))  # 200 samples
+        self.assertEqual(bench.percentile(values, 50), 100)
+        self.assertEqual(bench.percentile(values, 99), 198)
+        self.assertEqual(bench.percentile([42], 99), 42)
+        self.assertEqual(bench.percentile([3, 1, 2], 99), 3)
+
+    def make_runs(self, totals):
+        return [{"iterations_ns": [t // 2, t - t // 2], "wall_ns": t + 5, "peak_rss_bytes": t}
+                for t in totals]
+
+    def test_summary_values(self):
+        s = bench.summarize(self.make_runs([100, 102, 98, 101, 99]), "7", 2)
+        self.assertEqual(s["median_total_ns"], 100)
+        self.assertEqual(s["iqr_total_ns"], 2)
+        self.assertFalse(s["noisy"])
+        self.assertEqual(s["max_ns"], 51)
+        self.assertEqual(s["peak_rss_bytes_max"], 102)
+        self.assertEqual(s["wall_median_ns"], 105)
+        self.assertEqual(len(s["runs"]), 5)
+
+    def test_noisy_when_iqr_exceeds_five_percent_of_median(self):
+        # IQR 10 on median 100 is 10%: noisy. IQR 5 is exactly 5%: not noisy (the limit is >).
+        self.assertTrue(bench.summarize(self.make_runs([90, 95, 100, 105, 110]), "7", 2)["noisy"])
+        self.assertFalse(bench.summarize(self.make_runs([95, 97, 100, 102, 105]), "7", 2)["noisy"])
+
+
+class InterleavingTest(unittest.TestCase):
+    def test_same_seed_same_order_and_every_round_covers_every_pair(self):
+        orders = []
+        for _ in range(2):
+            seen = []
+            real = bench.run_process
+
+            def fake(root, preset, args, benchmark, iterations, seen=seen):
+                seen.append((args[0], benchmark))
+                return {"iterations_ns": [1] * iterations, "result": "ok", "wall_ns": 1,
+                        "peak_rss_bytes": 1, "heap": None}
+            bench.run_process = fake
+            try:
+                configs = [{"id": c, "preset": "p", "args": [c]} for c in "ABC"]
+                bench.measure("/", configs, ["x", "y"], {"x": "ok", "y": "ok"}, 4, 3, 99,
+                              log=lambda *a, **k: None)
+            finally:
+                bench.run_process = real
+            orders.append(seen)
+        self.assertEqual(orders[0], orders[1])
+        pairs = sorted((c, b) for c in "ABC" for b in "xy")
+        for r in range(4):
+            self.assertEqual(sorted(orders[0][r * 6:(r + 1) * 6]), pairs)
+        # Shuffled, not grouped A A A B B B: some round differs from the plain order.
+        self.assertTrue(any(orders[0][r * 6:(r + 1) * 6] != pairs for r in range(4)))
+
+    def test_seed_changes_order(self):
+        a, b = list(range(20)), list(range(20))
+        random.Random(1).shuffle(a)
+        random.Random(2).shuffle(b)
+        self.assertNotEqual(a, b)
+
+
+class BenchEndToEndTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+        write(os.path.join(self.root, "scripts", "ladder_configs.json"), json.dumps([
+            {"id": "01_fast", "label": "Fast", "preset": "release",
+             "args": ["--engine=fake", "--fake-ns=1000"]},
+            {"id": "02_slow", "label": "Slow", "preset": "release",
+             "args": ["--engine=fake", "--fake-ns=4000"]}]))
+        write(os.path.join(self.root, "bench", "expected.json"),
+              json.dumps({"alpha": "11", "beta": "22"}))
+        write(os.path.join(self.root, "bench", "alpha.rg"), "fn run() { return 11; }\n")
+        write(os.path.join(self.root, "bench", "beta.rg"), "fn run() { return 22; }\n")
+        write(os.path.join(self.root, ".gitignore"), "build/\n")
+        rung = os.path.join(self.root, "build", "release", "rung")
+        write(rung, FAKE_RUNG)
+        os.chmod(rung, os.stat(rung).st_mode | stat.S_IXUSR)
+        git(self.root, "init", "-q")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "fixture")
+
+    def run_bench(self, *extra):
+        return run_main(bench, ["--root", self.root, "--no-build", "--runs", "3",
+                                "--iterations", "4", *extra])
+
+    def results(self, config_id):
+        with open(os.path.join(self.root, "results", config_id + ".json")) as f:
+            return json.load(f)
+
+    def test_writes_results_with_metadata_and_statistics(self):
+        code, out, err = self.run_bench()
+        self.assertEqual(code, 0, err)
+        fast = self.results("01_fast")
+        meta = fast["meta"]
+        for key in ("cpu", "os", "power_source", "compiler", "commit", "date"):
+            self.assertTrue(meta[key], key)
+        self.assertEqual((meta["runs"], meta["kept_runs"], meta["iterations"], meta["seed"],
+                          meta["dirty"]), (3, 2, 4, bench.DEFAULT_SEED, False))
+        alpha = fast["benchmarks"]["alpha"]
+        self.assertEqual(alpha["median_total_ns"], 4000)
+        self.assertEqual(alpha["p99_ns"], 1000)
+        self.assertEqual(len(alpha["runs"]), 2)  # warm-up round discarded
+        self.assertGreater(alpha["peak_rss_bytes_max"], 0)
+        self.assertEqual(self.results("02_slow")["benchmarks"]["beta"]["median_total_ns"], 16000)
+
+    def test_subset_selection(self):
+        code, _, err = self.run_bench("--configs", "02_slow", "--benchmarks", "beta")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "results", "01_fast.json")))
+        self.assertEqual(list(self.results("02_slow")["benchmarks"]), ["beta"])
+
+    def test_unknown_config_is_an_error(self):
+        code, _, err = self.run_bench("--configs", "nope")
+        self.assertEqual(code, 1)
+        self.assertIn("unknown configuration 'nope'", err)
+
+    def test_refuses_dirty_tree_unless_allowed(self):
+        write(os.path.join(self.root, "bench", "alpha.rg"), "fn run() { return 12; }\n")
+        code, _, err = self.run_bench()
+        self.assertEqual(code, 1)
+        self.assertIn("uncommitted changes", err)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "results")))
+        code, _, err = self.run_bench("--allow-dirty")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.results("01_fast")["meta"]["dirty"])
+
+    def test_results_directory_does_not_count_as_dirty(self):
+        self.assertEqual(self.run_bench()[0], 0)
+        code, _, err = self.run_bench()  # results/ now exists, untracked
+        self.assertEqual(code, 0, err)
+
+    def test_wrong_result_aborts(self):
+        write(os.path.join(self.root, "scripts", "ladder_configs.json"), json.dumps([
+            {"id": "01_bad", "label": "Bad", "preset": "release",
+             "args": ["--engine=fake", "--fake-result=999"]}]))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "bad config")
+        code, _, err = self.run_bench()
+        self.assertEqual(code, 1)
+        self.assertIn("result '999', expected", err)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "results", "01_bad.json")))
+
+    def test_replacing_a_results_file_prints_what_changed(self):
+        self.run_bench()
+        path = os.path.join(self.root, "results", "01_fast.json")
+        old = self.results("01_fast")
+        old["benchmarks"]["alpha"]["median_total_ns"] = 8000
+        old["benchmarks"]["gone"] = old["benchmarks"]["beta"]
+        write(path, json.dumps(old))
+        code, out, _ = self.run_bench()
+        self.assertEqual(code, 0)
+        self.assertIn("replacing results/01_fast.json", out)
+        self.assertIn("alpha: 0.002 ms -> 0.001 ms per iteration (-50.0%)", out)
+        self.assertIn("gone: DROPPED", out)
+
+    def test_too_few_runs_rejected(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            bench.parse_args(["--runs", "1"])
+
+
+def synthetic_results(root, config, per_iter_ns, noisy=False, p99=None, benchmarks=("alpha",
+                                                                                    "beta")):
+    """Writes results/<id>.json as bench.py would, from made-up per-iteration times."""
+    entries = {}
+    for name in benchmarks:
+        total = per_iter_ns[name] * 10
+        runs = [{"iterations_ns": [per_iter_ns[name]] * 10, "wall_ns": total,
+                 "peak_rss_bytes": 1} for _ in range(3)]
+        entry = bench.summarize(runs, "x", 10)
+        entry["noisy"] = noisy
+        if p99:
+            entry["p99_ns"] = p99
+        entries[name] = entry
+    write(os.path.join(root, "results", config["id"] + ".json"), json.dumps({
+        "config": config,
+        "meta": {"cpu": "Fake CPU", "os": "FakeOS 1", "power_source": "AC", "compiler": "cc",
+                 "commit": "0123456789abcdef", "dirty": False, "date": "2026-10-01T10:00:00Z",
+                 "runs": 4, "kept_runs": 3, "iterations": 10, "seed": 1},
+        "benchmarks": entries}))
+
+
+class LadderTest(unittest.TestCase):
+    CONFIGS = [{"id": "01_a", "label": "Base", "preset": "release", "args": []},
+               {"id": "02_b", "label": "Faster", "preset": "release", "args": []},
+               {"id": "03_c", "label": "Slower", "preset": "release", "args": []},
+               {"id": "04_d", "label": "Unmeasured", "preset": "release", "args": []}]
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+        write(os.path.join(self.root, "scripts", "ladder_configs.json"), json.dumps(self.CONFIGS))
+        write(os.path.join(self.root, "bench", "expected.json"),
+              json.dumps({"beta": "1", "alpha": "2"}))
+        write(os.path.join(self.root, "README.md"),
+              f"# T\n\n## Results\n\n{ladder.START_MARKER}\nstale\n{ladder.END_MARKER}\n\n"
+              "## After\n")
+
+    def readme(self):
+        with open(os.path.join(self.root, "README.md"), encoding="utf-8") as f:
+            return f.read()
+
+    def fill(self):
+        synthetic_results(self.root, self.CONFIGS[0], {"alpha": 1000, "beta": 2000})
+        synthetic_results(self.root, self.CONFIGS[1], {"alpha": 500, "beta": 400}, p99=777000)
+        synthetic_results(self.root, self.CONFIGS[2], {"alpha": 1000, "beta": 400}, noisy=True)
+
+    def test_no_results_says_so(self):
+        code, _, _ = run_main(ladder, ["--root", self.root])
+        self.assertEqual(code, 0)
+        self.assertIn("No results have been recorded yet", self.readme())
+        self.assertEqual(run_main(ladder, ["--check", "--root", self.root])[0], 0)
+
+    def test_tables(self):
+        self.fill()
+        self.assertEqual(run_main(ladder, ["--root", self.root])[0], 0)
+        text = self.readme()
+        # Columns follow bench/expected.json order, not alphabetical.
+        self.assertIn("| Configuration | beta | alpha |", text)
+        self.assertIn("| `01_a` Base | 1.00× | 1.00× |", text)
+        self.assertIn("| `02_b` Faster | 5.00× | 2.00× |", text)
+        # Marginal: 03_c is half as fast as 02_b on alpha (regression), same on beta.
+        self.assertIn("| `03_c` Slower | 1.00× † | **0.50× ▼** † |", text)
+        self.assertIn("| `01_a` Base | — | — |", text)
+        self.assertIn("| `04_d` Unmeasured | not measured | not measured |", text)
+        self.assertIn("0.78 ms", text)  # p99 table
+        self.assertIn("Fake CPU, FakeOS 1", text)
+        self.assertIn("`0123456789`", text)
+        self.assertTrue(text.endswith("## After\n"))
+        self.assertIn("## Results\n\n" + ladder.START_MARKER + "\n_This section is generated",
+                      text)
+
+    def test_check_passes_when_current_and_fails_after_hand_edit(self):
+        self.fill()
+        run_main(ladder, ["--root", self.root])
+        code, out, _ = run_main(ladder, ["--check", "--root", self.root])
+        self.assertEqual(code, 0, out)
+        edited = self.readme().replace("5.00×", "9.99×")
+        write(os.path.join(self.root, "README.md"), edited)
+        code, _, err = run_main(ladder, ["--check", "--root", self.root])
+        self.assertEqual(code, 1)
+        self.assertIn("9.99", err)
+        self.assertIn("Never edit it by hand", err)
+        # --check must not repair the file.
+        self.assertEqual(self.readme(), edited)
+
+    def test_check_fails_when_results_change(self):
+        self.fill()
+        run_main(ladder, ["--root", self.root])
+        synthetic_results(self.root, self.CONFIGS[1], {"alpha": 250, "beta": 400})
+        self.assertEqual(run_main(ladder, ["--check", "--root", self.root])[0], 1)
+        self.assertEqual(run_main(ladder, ["--root", self.root])[0], 0)
+        self.assertEqual(run_main(ladder, ["--check", "--root", self.root])[0], 0)
+
+    def test_missing_markers_is_an_error(self):
+        write(os.path.join(self.root, "README.md"), "# nothing here\n")
+        code, _, err = run_main(ladder, ["--check", "--root", self.root])
+        self.assertEqual(code, 2)
+        self.assertIn("ladder:start", err)
+
+    def test_corrupt_results_file_is_an_error(self):
+        write(os.path.join(self.root, "results", "01_a.json"), "{not json")
+        code, _, err = run_main(ladder, ["--root", self.root])
+        self.assertEqual(code, 2)
+        self.assertIn("01_a.json", err)
+
+    def test_repository_readme_matches_committed_results(self):
+        # The same check CI runs, against the real README and results/.
+        code, out, err = run_main(ladder, ["--check"])
+        self.assertEqual(code, 0, err)
+
+
+if __name__ == "__main__":
+    unittest.main()
