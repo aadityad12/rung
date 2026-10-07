@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -54,6 +55,11 @@ std::string quote(const std::string& text) {
 // Shortest %g form that reads back exactly, always showing it is a float. This is for display
 // in the dump only; program output uses the runtime's printer (notes §2.3).
 std::string float_text(double value) {
+    // Only constant folding can put these in a tree (`1 / 0.0`); `%g` would print "inf" and
+    // the loop below would then append ".0" to it.
+    if (value != value) return "nan";
+    if (value == std::numeric_limits<double>::infinity()) return "inf";
+    if (value == -std::numeric_limits<double>::infinity()) return "-inf";
     char buffer[40];
     for (int precision = 1; precision <= 17; ++precision) {
         std::snprintf(buffer, sizeof buffer, "%.*g", precision, value);

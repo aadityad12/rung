@@ -18,6 +18,7 @@
 #include "compiler_stack.h"
 #include "disassembler.h"
 #include "engine.h"
+#include "fold.h"
 #include "lexer.h"
 #include "output.h"
 #include "parser.h"
@@ -43,6 +44,7 @@ struct Options {
     bool want_bytecode = false;
     bool gc_stress = false;
     bool want_stats = false;
+    bool fold = false;
     std::optional<std::size_t> bench_iterations;
     std::string bench_out;
     std::string engine = "tree";
@@ -56,7 +58,7 @@ void print_usage() {
         std::cerr << separator << name;
         separator = "|";
     }
-    std::cerr << "] [--gc-stress] [--stats]\n"
+    std::cerr << "] [--gc-stress] [--stats] [--fold]\n"
                  "            [--dump-tokens | --dump-ast | --dump-bytecode]\n"
                  "            [--bench=N --bench-out=FILE] <file.rg>\n"
                  "       --dump-bytecode also accepts --engine=stack|register\n";
@@ -103,6 +105,27 @@ int run_bench_mode(const Options& options, rung::Engine& engine, const rung::Hea
     return kExitOk;
 }
 
+// The code size of the program the bytecode engines would run, for --stats (notes §5, rung 3f).
+// Compiled again on a scratch heap, so the engine's own run is not touched; only --stats pays.
+void print_bytecode_size(const rung::Program& program, const std::string& engine) {
+    rung::Heap heap;
+    rung::BytecodeSize size;
+    if (engine == "register") {
+        rung::RegCompileResult compiled = rung::compile_register(program, heap);
+        if (!compiled.ok()) return;
+        size = rung::register_bytecode_size(*compiled.function);
+    } else if (engine == "stack") {
+        rung::StackCompileResult compiled = rung::compile_stack(program, heap);
+        if (!compiled.ok()) return;
+        size = rung::stack_bytecode_size(*compiled.function);
+    } else {
+        return;
+    }
+    std::cerr << "bytecode: " << size.functions << " functions, " << size.instructions
+              << " instructions, " << size.code_bytes << " code bytes, " << size.constants
+              << " constants\n";
+}
+
 // Everything after the command line has been understood. Returns the process exit code.
 int execute(const Options& options) {
     std::optional<std::string> source = read_file(options.path);
@@ -133,6 +156,11 @@ int execute(const Options& options) {
         std::cerr << rung::format_error(*error) << "\n";
         return kExitCompileError;
     }
+
+    // Compile-time simplification (ladder rung 3f). After the resolver, because folding keeps
+    // the bindings it computed valid, and before everything that reads the tree.
+    rung::FoldStats fold_stats;
+    if (options.fold) fold_stats = rung::fold(*parsed.program);
 
     if (options.want_ast) std::cout << rung::dump_ast(*parsed.program);
 
@@ -179,6 +207,11 @@ int execute(const Options& options) {
         exit_code = run_bench_mode(options, *engine, heap);
     }
     if (options.want_stats) {
+        if (options.fold) {
+            std::cerr << "fold: " << fold_stats.expressions_folded << " expressions folded, "
+                      << fold_stats.statements_removed << " statements removed\n";
+        }
+        print_bytecode_size(*parsed.program, options.engine);
         print_stats(heap);
         std::cerr << engine->stats_report();
     }
@@ -245,6 +278,8 @@ int main(int argc, char** argv) {
             options.gc_stress = true;
         } else if (arg == "--stats") {
             options.want_stats = true;
+        } else if (arg == "--fold") {
+            options.fold = true;
         } else if (arg.substr(0, kEnginePrefix.size()) == kEnginePrefix) {
             options.engine = std::string(arg.substr(kEnginePrefix.size()));
         } else if (arg.substr(0, kBenchPrefix.size()) == kBenchPrefix) {

@@ -1,0 +1,9 @@
+print !true; // expect: false
+print !false; // expect: true
+print !nil; // expect: true
+print !0; // expect: false
+print !0.0; // expect: false
+print !""; // expect: false
+print !"x"; // expect: false
+print !!nil; // expect: false
+print ![]; // expect: false

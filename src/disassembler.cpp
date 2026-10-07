@@ -444,4 +444,44 @@ std::string disassemble_register(const ObjFunction& script) {
     return out;
 }
 
+namespace {
+
+void add_stack_size(const ObjFunction& fn, BytecodeSize& size) {
+    ++size.functions;
+    size.code_bytes += fn.chunk.code.size();
+    size.constants += fn.chunk.constants.size();
+    std::string scratch;  // the row text is not needed, only where the next instruction starts
+    for (std::size_t offset = 0; offset < fn.chunk.code.size(); ++size.instructions) {
+        scratch.clear();
+        offset = disassemble_instruction(fn.chunk, offset, scratch);
+    }
+    for (Value v : fn.chunk.constants) {
+        if (is_function(v)) add_stack_size(*as_function(v), size);
+    }
+}
+
+void add_register_size(const ObjFunction& fn, BytecodeSize& size) {
+    ++size.functions;
+    size.instructions += fn.reg.code.size();
+    size.code_bytes += fn.reg.code.size() * sizeof(Instruction);
+    size.constants += fn.reg.constants.size();
+    for (Value v : fn.reg.constants) {
+        if (is_function(v)) add_register_size(*as_function(v), size);
+    }
+}
+
+}  // namespace
+
+BytecodeSize stack_bytecode_size(const ObjFunction& script) {
+    BytecodeSize size;
+    add_stack_size(script, size);
+    return size;
+}
+
+BytecodeSize register_bytecode_size(const ObjFunction& script) {
+    BytecodeSize size;
+    add_register_size(script, size);
+    return size;
+}
+
 }  // namespace rung

@@ -55,4 +55,17 @@ std::string disassemble_register_function(const ObjFunction& function);
 std::size_t disassemble_register_instruction(const RegChunk& chunk, std::size_t index,
                                              std::string& out);
 
+// How much code a compiled program has, for `--stats` (notes §5, rung 3f). Counts the script
+// and every function nested in it. `instructions` counts whole stack instructions (opcode with
+// its operands) or register words (a CAPTURE word counts, since it takes a word of its own);
+// `code_bytes` is the size of the code arrays, which is what the two formats actually occupy.
+struct BytecodeSize {
+    std::size_t functions = 0;
+    std::size_t instructions = 0;
+    std::size_t code_bytes = 0;
+    std::size_t constants = 0;  // pool entries, nested functions included
+};
+BytecodeSize stack_bytecode_size(const ObjFunction& script);
+BytecodeSize register_bytecode_size(const ObjFunction& script);
+
 }  // namespace rung

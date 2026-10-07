@@ -49,6 +49,7 @@ ctest --preset debug
 ./build/debug/rung --engine=stack --stats examples/hello.rg   # stack VM; debug builds also count instructions
 ./build/debug/rung --engine=register --stats examples/hello.rg   # register VM, same counters
 ./build/debug/rung --gc-stress --stats examples/hello.rg   # collect on every allocation; heap stats
+./build/debug/rung --engine=register --fold --stats examples/hello.rg   # constant folding + dead-code removal
 ./build/debug/rung --dump-tokens examples/hello.rg
 ./build/debug/rung --dump-ast examples/hello.rg
 ./build/debug/rung --dump-bytecode examples/hello.rg                    # stack bytecode
@@ -77,7 +78,9 @@ Five layers, each catching something the others cannot:
    [`tests/conformance/README.md`](tests/conformance/README.md). `ctest` runs it once per
    engine, and once more per engine with `--gc-stress` (`conformance-tree`,
    `conformance-tree-gc-stress`, `conformance-stack`, `conformance-stack-gc-stress`,
-   `conformance-register`, `conformance-register-gc-stress`).
+   `conformance-register`, `conformance-register-gc-stress`), and once more per engine with
+   `--fold` (`conformance-<engine>-fold`; the register VM also with `--gc-stress`), since
+   folding must not change what any program does.
 2. **Unit tests** (`tests/unit/`, [doctest](https://github.com/doctest/doctest)). Each C++
    module on its own: the lexer, parser, resolver, runtime and GC, the tree-walker, both
    compilers and both VMs, and the ARM64 encoder (checked byte for byte against LLVM).
