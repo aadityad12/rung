@@ -402,6 +402,19 @@ means adding it here first.
   operators, calls, blocks, `if`/`while` bodies all count). Deeper is the compile error
   `nesting too deep`. This keeps every recursive C++ pass (parser, resolver, tree-walker,
   compilers) safe from native stack overflow, and bounds the register VM's register count.
+- **Chain limit** (resolves Q1): one expression may be at most **1000** links long. A link is
+  one node that has an operand: a binary or logical operator (`+ - * / % == != < <= > >= and or`),
+  a call, an index, a unary operator, an array literal, or an assignment. The chain length of an
+  expression is the number of links on the longest path from its root down to a leaf, and
+  parentheses are not links, so `(1 + 1) + 1` is 2 long. Longer is the compile error
+  `expression chain too long`. The nesting limit above counts only syntax that nests in the
+  source; `1 + 1 + ... + 1`, `f(1)(1)...(1)` and `a[0][0]...[0]` nest nothing, yet the parser
+  turns each into a left-leaning tree as tall as the chain is long, and every recursive pass
+  (resolver, `--dump-ast`, the AST destructor, the compilers, the tree-walker) follows that
+  height. Together the two limits bound the native recursion of every such pass: at most 200
+  nested statements or groups, plus one expression at most 1000 links tall. Every engine must
+  accept and reject exactly the same programs (D11), so this is a language rule, not a parser
+  detail.
 - Compile error messages are listed in §2.7 by the parser issue; conformance tests pin each one.
 
 ### 2.7 Compile error messages
@@ -437,11 +450,20 @@ except `invalid assignment target`, which reports the line of the `=`.
 | `=` after something that is not a variable or an index | `invalid assignment target` |
 | `2147483648` anywhere except directly after unary `-` | `integer literal '2147483648' is too large for a 32-bit int` |
 | expressions or statements nested more than 200 deep | `nesting too deep` |
+| an expression more than 1000 links long (§2.6, chain limit) | `expression chain too long` |
 
 Notes on the nesting count (§2.6): a level is added by `(`, `[` in an array literal, a call's
 argument list, an index, a unary operator, the right side of `=`, a `{ }` block, and the body of
 an `if` / `while` / `for`. A top-level statement or expression is level zero, and long flat
-chains such as `1 + 1 + ... + 1` do not nest.
+chains such as `1 + 1 + ... + 1` do not nest (they have their own limit, below).
+
+Notes on the chain length (§2.6): the line reported for `expression chain too long` is the line of
+the token that adds the link that goes over 1000: the operator, the call's `(`, the index's `[`,
+the unary operator, the array literal's `[`, or the `=`. Because the length is the height of the
+syntax tree, a group in the middle of a chain counts with the links after it:
+`1 + (<chain of 600>) + 1 + ... + 1` with 400 links after the group is 1001 long even though it
+nests once. An assignment `a = v` or `a[i] = v` is one link above its value `v`; `a[i] = v` adds
+nothing above its target `a[i]` unless `v` is taller than the target.
 
 **Resolver messages** (notes D11). The resolver runs after the parser succeeds and stops at the
 first error. Lines are the offending token's line, with these specifics: a name error (`let`,
@@ -496,29 +518,32 @@ Rules behind the table, which every engine relies on:
 
 ## 4. Open questions
 
-### Q1. Long flat chains overflow the native stack (found by the fuzzer, issue #12). `OPEN`
+### Q1. Long flat chains overflow the native stack (found by the fuzzer, issue #12). `RESOLVED`
 
 The nesting limit (§2.6) bounds *nesting*, but `1 + 1 + ... + 1`, `a and a and ... and a`,
 `f(1)(1)...(1)` and `a[0][0]...[0]` do not nest: they are left-associative chains, so the
 parser builds them in a loop and no depth counter moves. The resulting AST is still a left spine
 as deep as the chain is long, and every recursive pass follows that spine. Feeding a chain of
-about 8,000 terms (16 KB of source) to the resolver overflows the 8 MiB main-thread stack in the
-fuzz build (AddressSanitizer reports `stack-overflow` in `Resolver::expr_`); 6,000 terms passed.
+about 8,000 terms (16 KB of source) to the resolver overflowed the 8 MiB main-thread stack in the
+fuzz build (AddressSanitizer reported `stack-overflow` in `Resolver::expr_`); 6,000 terms passed.
 The AST destructor and `dump_ast` recurse the same way, and so will the tree-walker and the
-compilers (the tree-walker runs on the 512 MiB stack from D12, but the front end runs on the
-main thread). §2.6's claim that the limit keeps *every* recursive pass safe is therefore not
-true for flat chains.
+compilers.
 
-Options, none chosen (each changes a documented rule, so it is the owner's call):
-1. Count each link of a left-associative chain toward the nesting limit. Simple, but a
-   200-term `1 + 1 + ...` becomes a compile error, and the parser test that parses a 5000-term
-   flat chain (and the "long flat chains do not nest" note in §2.7) must change.
-2. Add a separate limit on the length of one chain (a new compile error message).
-3. Make the resolver, the AST destructor and `dump_ast` iterative along the left spine, and
-   require the same of every engine. No language change, more code in every pass.
+Options were: (1) count each link toward the nesting limit; (2) a separate limit on the length of
+one chain; (3) make every pass iterative along the spine. **The owner chose option 2, with a limit
+of 1000**, so no pass has to be iterative and future engines are protected too. The rule and its
+message are in §2.6 (chain limit) and §2.7.
 
-The fuzz target caps inputs at 4096 bytes (at most about 2,000 chain terms, well under the
-overflow point) so CI stays meaningful until this is decided. Remove the cap when it is.
+Implementation note: the limit is on the *height* of an expression's syntax tree, not on the
+length of one run of operators. Counting only a single run would leave a hole: nothing stops
+`(1 + 1 + ... + (1 + 1 + ...) + 1 + ...) + ...` from stacking one 999-link run inside another, 200
+groups deep, for a tree 200,000 tall that fits the nesting limit. Before the change a single flat
+chain of 20,000 terms crashed the asan build (`AddressSanitizer:DEADLYSIGNAL` from stack
+exhaustion), and so did 150 nested groups of 250 links each; after it both are the compile error
+`expression chain too long`. The unit tests pin both, plus the 1000/1001 boundary for every
+construct that builds a chain (`tests/unit/parser_test.cpp`, "chain limit").
+
+The fuzz target's 4096-byte input cap existed only because of this question and is removed.
 
 ---
 
