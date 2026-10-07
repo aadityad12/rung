@@ -11,6 +11,7 @@ the format is decided in notes D13.
 python3 tests/run_conformance.py --rung build/debug/rung --engine tree
 python3 tests/run_conformance.py --rung build/asan/rung --engine tree --gc-stress
 python3 tests/run_conformance.py --rung build/debug/rung --engine tree numbers/ closures/
+python3 tests/run_conformance.py --rung build/asan-goto-nanbox/rung --engine jit --rung-arg=--jit-threshold=1
 ```
 
 | Option | Meaning |
@@ -24,6 +25,8 @@ python3 tests/run_conformance.py --rung build/debug/rung --engine tree numbers/ 
 | `--timeout SEC` | per-test limit, default 10. A test over the limit fails, so an infinite loop cannot hang CI. `--gc-stress` under a sanitizer is much slower, and the 10,000-deep recursion tests are the slowest, so raise this there. |
 | `--jobs N` | tests run in parallel, default the CPU count |
 | `--skip SUBSTRING` | do not run tests whose path contains it (repeatable). Skipped tests are listed as `SKIPPED` and counted in the last line, so nothing is skipped silently. CMake uses it only for the deep-recursion tests under `--gc-stress` in the ASan preset (see `CMakeLists.txt`). |
+| `--rung-arg=ARG` | an extra argument for rung, before the file (repeatable). Write it with `=`, since the value starts with `--`. CMake passes `--rung-arg=--jit-threshold=1` for the JIT runs. |
+| `--expect-unavailable` | for an engine this build does not have (the JIT outside arm64 + NaN-boxing builds, notes D6, D16): checks that rung refuses it as unavailable (exit 64), lists every test as `SKIPPED` and exits 77, which ctest reports as *Skipped*. If rung runs the engine after all, that is a failure. |
 | `FILTER...` | run only tests whose path (relative to this directory) contains one of these strings |
 
 Each failing test prints one `FAIL path` line, then what differed (exit code, a small diff of
@@ -91,6 +94,7 @@ Rules that keep tests honest:
 | `globals/` | redeclaration, undefined reads and assignments, and what a function that reads a global sees when the global changes (these double as the inline-cache tests) |
 | `folding/` | what `--fold` could get wrong: wraparound and IEEE results computed at compile time, constant operations that must still fail at run time on their line, `and`/`or`/`!` on constants, code after `return`, `if`/`while` on constants, scoping around removed code. They are ordinary programs and pass without `--fold` too. |
 | `programs/` | a few small whole programs (sieve, sort, linked list) that stress the collector |
+| `jit/` | what the baseline JIT could get wrong (notes D16): guards failing mid-loop, ints then floats through one compiled function, division by zero in machine code, wraparound, `loop_sum`. They run on every engine like any other test. |
 
 A few tests are generated (a 255-parameter function, 200 nested blocks) because writing them by
 hand is error-prone. The generated files are ordinary tests and are edited like any other.

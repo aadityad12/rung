@@ -3,8 +3,9 @@
 
 Usage:
     run_conformance.py --rung PATH --engine NAME [--gc-stress] [--fold] [--inline-cache]
-                       [--superinstructions] [--timeout SEC]
-                       [--jobs N] [--skip SUBSTRING]... [FILTER...]
+                       [--superinstructions] [--timeout SEC] [--jobs N]
+                       [--skip SUBSTRING]... [--rung-arg=ARG]... [--expect-unavailable]
+                       [FILTER...]
 
 The expected behaviour of each test lives in comments inside the test file (docs/notes.md D13):
 
@@ -18,7 +19,16 @@ Stdout, exit code and the first line of stderr are compared exactly.
 FILTER arguments are substrings of a test's path relative to tests/conformance (for example
 "numbers/" or "int_division"); a test runs if it matches any of them.
 
-Exit status: 0 if every test passed, 1 if any failed (or nothing matched), 2 on bad usage.
+--rung-arg=ARG passes ARG to rung before the test file (repeatable), e.g.
+--rung-arg=--jit-threshold=1. Write it with "=": the value starts with "--".
+
+--expect-unavailable is for an engine this build of rung does not have (the JIT on x86-64, or
+without NaN-boxing, notes D6): the runner checks that rung refuses the engine as unavailable
+(exit 64), names every test as skipped, and exits 77, which ctest reports as "Skipped". If rung
+runs the engine after all, that is a failure: the build and the test registration disagree.
+
+Exit status: 0 if every test passed, 1 if any failed (or nothing matched), 2 on bad usage, 77 if
+every test was skipped because the engine is unavailable (--expect-unavailable).
 Python 3 standard library only.
 """
 
@@ -34,6 +44,8 @@ SUITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conformanc
 
 EXIT_RUNTIME_ERROR = 70  # sysexits.h, docs/notes.md D9
 EXIT_COMPILE_ERROR = 65
+EXIT_USAGE = 64
+EXIT_SKIPPED = 77  # ctest's SKIP_RETURN_CODE for the engines a build does not have
 
 # One space after the colon belongs to the syntax; anything after it is the text, verbatim.
 EXPECT_RE = re.compile(r"//\s*expect:(?: (.*))?$")
@@ -114,12 +126,7 @@ def diff_text(expected, actual, label):
     return "\n".join("    " + line for line in lines)
 
 
-def run_one(args, name, path):
-    """Returns (name, None) on success, or (name, failure_text)."""
-    expect = parse_expectation(path)
-    if expect.problem:
-        return name, "  bad test file: " + expect.problem
-
+def rung_command(args, path):
     command = [args.rung, "--engine=" + args.engine]
     if args.gc_stress:
         command.append("--gc-stress")
@@ -129,7 +136,34 @@ def run_one(args, name, path):
         command.append("--inline-cache")
     if args.superinstructions:
         command.append("--superinstructions")
+    command.extend(args.rung_arg)
     command.append(path)
+    return command
+
+
+def check_unavailable(args, tests):
+    """--expect-unavailable: rung must refuse the engine. Returns the exit status."""
+    done = subprocess.run(rung_command(args, tests[0][1]), capture_output=True,
+                          timeout=args.timeout)
+    stderr = done.stderr.decode("utf-8", errors="replace")
+    if done.returncode != EXIT_USAGE or "not available in this build" not in stderr:
+        print("FAIL engine '%s' was expected to be unavailable in this build, but rung exited %d"
+              % (args.engine, done.returncode))
+        print("  stderr: %r" % stderr.split("\n", 1)[0])
+        return 1
+    for name, _path in tests:
+        print("SKIPPED %s" % name)
+    print("0 passed, 0 failed, %d skipped: %s" % (len(tests), stderr.split("\n", 1)[0]))
+    return EXIT_SKIPPED
+
+
+def run_one(args, name, path):
+    """Returns (name, None) on success, or (name, failure_text)."""
+    expect = parse_expectation(path)
+    if expect.problem:
+        return name, "  bad test file: " + expect.problem
+
+    command = rung_command(args, path)
     try:
         done = subprocess.run(command, capture_output=True, timeout=args.timeout)
     except subprocess.TimeoutExpired:
@@ -170,6 +204,12 @@ def main():
     parser.add_argument("--skip", action="append", default=[], metavar="SUBSTRING",
                         help="do not run tests whose path contains SUBSTRING (repeatable); "
                              "skipped tests are counted and named in the summary, never silent")
+    parser.add_argument("--rung-arg", action="append", default=[], metavar="ARG",
+                        help="extra argument for rung, before the file (repeatable); write it "
+                             "as --rung-arg=ARG")
+    parser.add_argument("--expect-unavailable", action="store_true",
+                        help="the engine is not in this build: check that rung says so, report "
+                             "every test as skipped and exit 77")
     parser.add_argument("filters", nargs="*", metavar="FILTER",
                         help="only run tests whose path contains one of these")
     args = parser.parse_args()
@@ -182,6 +222,8 @@ def main():
     if not tests:
         print("run_conformance: no tests matched", file=sys.stderr)
         return 1
+    if args.expect_unavailable:
+        return check_unavailable(args, tests + skipped)
 
     # Results are printed in path order however the tests finish, so runs are comparable.
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:

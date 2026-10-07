@@ -402,6 +402,111 @@ words and the calling convention below were specified by the owner's issue; ever
 - Equality, truthiness and printing are unchanged and still live in `src/runtime/ops.cpp`:
   `nan != nan` and `-0.0 == 0.0` come from comparing the doubles, never the bits.
 
+### D16. Baseline JIT: hotness, whitelist, calling convention, bail-out. `DECIDED` (2026-10-07, issue #23)
+
+`--engine=jit` is the register VM with a method JIT attached: hot functions are compiled to
+ARM64 machine code, and everything else stays in the VM. The hotness rule, the whitelist, the
+registers-in-memory design, the guards and the bail-out-by-index protocol were specified by the
+owner's issue; everything under *Details chosen while implementing* is the implementer's choice
+and is open to review. Code: `src/jit/jit_compiler.{h,cpp}` (whitelist and code generation),
+`src/jit/jit.{h,cpp}` (executable memory, log, statistics), the hooks in `src/vm_reg.cpp`.
+
+- **Other rungs.** `--engine=jit` accepts `--fold` (a front-end pass) and `--inline-cache` (the
+  register VM's global cache, which the JIT never touches: functions that use globals are not
+  compiled). The suite also runs as `conformance-jit-fold` and `conformance-jit-inline-cache`.
+- **Where it exists.** Only in builds with an arm64 CPU *and* `RUNG_NANBOX` (CMake defines
+  `RUNG_JIT`): the code is ARM64 and its type guards test NaN-box tags (D3, D15). Presets
+  `release-goto-nanbox` (the one measured) and `asan-goto-nanbox`. Elsewhere `--engine=jit` is the
+  usage error `engine 'jit' is not available in this build`, exit 64, and the ctest entries
+  `conformance-jit` / `conformance-jit-gc-stress` are reported as *Skipped* (the runner checks
+  that rung refuses the engine, lists every test as skipped and exits 77; D6).
+- **Hotness.** Each `ObjFunction` counts its calls plus its backward `JUMP`s (loop back-edges).
+  When the count reaches `--jit-threshold=N` (default 1000) the function is compiled at once,
+  on the engine's thread. A function that gets hot through a call runs machine code from that
+  same call (its frame is at instruction 0, so nothing needs translating); one that gets hot
+  through a back-edge runs machine code from its next call, because entering a running loop
+  (on-stack replacement) is not built. A function is tried once: compiled or rejected, never
+  retried. The top-level script is never compiled: it runs once, so without on-stack replacement
+  its code could never be entered.
+- **Whitelist.** A function compiles only if every instruction is one of: `MOVE`, `LOADK` of an
+  int, nil or bool constant, `LOADNIL/LOADTRUE/LOADFALSE`, `ADD SUB MUL DIV MOD NEG`,
+  `EQ NE LT LE GT GE` (operands: registers or int constants), `JUMP JUMP_IF_FALSE JUMP_IF_TRUE`,
+  `RETURN` (of a register or an int, nil or bool constant) and `RETURN_NIL`, and its frame has at
+  most 4096 registers. Globals, upvalues, closures, calls, `print`, arrays, `!`, string or float
+  constants: the function is rejected and logged, and stays in the VM. `fib` is rejected (it
+  reads the global `fib`, D7); `loop_sum` compiles.
+- **Code shape.** Registers stay in memory (D3): every bytecode instruction becomes "load the
+  operands from `[base + r*8]`, check them, compute, box, store to `[base + a*8]`". Nothing is
+  kept in machine registers across instructions, so at every instruction boundary the frame
+  holds exactly what the VM would have.
+- **Type guard.** An int's NaN box has `0x7FFD0000` in its high 32 bits (D15). A guard is
+  `lsr x11, xN, #32; cmp w11, w2; b.ne exit`, with `w2 = 0x7FFD0000` set up on entry. The int is
+  the low 32 bits, so there is nothing to unbox; `W`-register arithmetic wraps exactly like Rung
+  ints (D1), and a 32-bit result already has a zero high half, so boxing is one `orr` with
+  `x1 = 0x7FFD'0000'0000'0000`. Comparisons box with `cset` + `orr` of `false`'s bits. Conditional
+  jumps need no guard: a value is falsy only if it equals the bits of `false` or of `nil`.
+- **Division and modulo** (§2.1). `cbz` on the divisor exits before `sdiv`, because ARM64
+  `SDIV` returns 0 for a zero divisor. A constant divisor is known at compile time: no check
+  when it is not zero, an unconditional exit when it is. `%` is `sdiv` then `msub`.
+  `INT32_MIN / -1` and `INT32_MIN % -1` need nothing: `sdiv` gives `INT32_MIN`, then `msub`
+  gives 0.
+- **Calling convention** (AAPCS64; Apple's arm64 ABI is the same for these registers). The VM
+  calls the code as the C function `uint32_t f(Value* base)`:
+
+  | Register | Use |
+  |---|---|
+  | `x0` | in: `base`, the frame's register 0; out: `w0` = bytecode index to resume at |
+  | `x1`-`x4` | constants set up on entry: int tag, int tag's high word, `false`, `nil` |
+  | `x9`-`x12` | scratch: operand B, operand C, guard / quotient, result |
+  | `x16`, `x17`, `x18` | never touched (linker veneers; Apple's platform register) |
+  | `x19`-`x28`, `x29`, `x30`, `sp` | never touched, so nothing is saved and `ret` uses `x30` |
+
+  Every register used is one the caller already expects a call to clobber (`x0`-`x7` arguments,
+  `x9`-`x15` temporaries), the code calls nothing and uses no stack, so there is **no prologue or
+  epilogue at all**: no frame record is pushed, `sp` never moves (so its 16-byte alignment is
+  untouched), and the caller's frame pointer stays valid for debuggers and profilers.
+- **Bail-out protocol.** Every exit is `mov w0, #index; ret`. Each instruction reads and checks
+  all its operands before it writes anything, so when a guard or a zero-divisor check fails the
+  frame still holds the state from *before* that instruction. The code returns that
+  instruction's index; the VM sets its pc there and executes the instruction itself, so a float
+  takes the VM's float path and `1 / 0` raises `division by zero` with the VM's message and line
+  (§2.4). After a bail-out the rest of that call runs in the VM. `RETURN` / `RETURN_NIL` exit the
+  same way with their own index and the VM performs the return (closing upvalues, popping the
+  frame), so the machine code never needs to know how frames work. The VM tells the two apart by
+  the opcode at the index: a return is a normal exit, anything else is a bail-out (logged).
+  Every bytecode instruction's first machine instruction is recorded (`GeneratedCode::starts`,
+  the D3 map), and each exit stub carries its bytecode index, so no lookup happens at run time.
+- **Memory.** One `ExecBuffer` (`src/jit/exec_memory.h`, issue #21) per compiled function, owned
+  by the JIT until the engine is destroyed, even if the function object is collected first; so a
+  function's `jit_entry` pointer can never dangle while the engine runs.
+- **Observability.** `--jit-log` writes one stderr line per compile (function, bytecode
+  instructions, machine instructions, bytes, compile time in ns), per rejection (the first
+  instruction outside the whitelist and why) and per bail-out (function, instruction, opcode,
+  line). `--stats` adds `jit: N functions compiled (B bytes of code), M rejected, K bail-outs,
+  T ns compiling`. Bench mode's JSON gains `"jit_compile_ns"`, the total compile time of the
+  whole process (top level and every iteration; from `Engine::jit_compile_ns()`, absent for the
+  other engines), and `scripts/bench.py` keeps it per run and as `jit_compile_ns_median` in
+  `results/<row>.json`, so the JIT row can report what compiling cost next to what it saved.
+  Compile time counts the whitelist check, code generation, and mapping and writing the
+  executable memory, for rejected functions too.
+
+**Details chosen while implementing.**
+- *The VM loop is a template, `execute_loop<bool kJit>`.* The JIT's two hooks (counting and
+  entering machine code after a frame is pushed; counting a backward jump) exist only in
+  `execute_loop<true>`, so `--engine=register` runs exactly the loop it ran before (D4: each rung
+  changes one thing). The cost is a second copy of the loop in the binary.
+- *The JIT state lives on `ObjFunction`* (`jit_hotness`, `jit_status`, `jit_entry`), so the check
+  on every call is a load and a compare, not a table lookup. Background compilation (D8, Engine
+  5) will have to make `jit_entry` the `std::atomic` handoff that D8 describes.
+- *`!` is not compiled*, although it would need no guard, because the issue's whitelist does not
+  list it; adding it is a few lines.
+- *No give-up policy.* A compiled function whose guard fails on every call (always called with
+  floats, say) enters machine code and bails out on every call. That is correct but wasteful;
+  counting bail-outs and discarding the code is left for later, once a benchmark shows it.
+- *Whole-instruction granularity.* Two operands that are the same register are guarded twice,
+  and a comparison followed by a conditional jump stores the bool and loads it back. These are
+  the obvious next optimisations for this design, not done here (a baseline JIT).
+
 ---
 
 ## 2. Semantics contract: rules every engine must follow exactly
@@ -1156,7 +1261,44 @@ How D5's noise control became code, and the choices D5 left open:
   makes the ladder cumulative, so they gain the flags of rungs 3d and 3e (superinstructions,
   inline caching) when those land and before 08 is measured.
 
+### Engine 4: baseline JIT
+
+- **What changed.** `--engine=jit` (D16): the register VM compiles hot whitelisted functions to
+  ARM64 machine code. Every unit test and the whole conformance suite pass on it with
+  `--jit-threshold=1` (every eligible function compiled on its first call), with and without
+  `--gc-stress`, in `asan-goto-nanbox` and `release-goto-nanbox`, which CI runs on macOS arm64
+  and Linux arm64. `tests/conformance/jit/` adds the cases the JIT is most likely to get wrong:
+  a guard failing in the middle of a compiled loop, ints then floats and strings through the same
+  compiled function, division and modulo by zero (a register divisor and a constant one), every
+  wraparound rule, comparisons at the int extremes, truthiness of non-bool values, nested loops.
+- **What compiles.** Run over the conformance suite with `--jit-threshold=1 --jit-log`, most
+  functions are rejected, as the whitelist intends: the commonest reasons are a captured
+  variable, a global (every call of a global function, so all recursion, D7), creating a
+  closure, and a string constant. The ones that compile are small int functions (`gcd`,
+  `collatz_steps`, loops that return early, arithmetic helpers) and `loop_sum`.
+- **The VM counters do not see machine code.** `--stats` on `--engine=jit` counts only the
+  instructions the VM dispatched, so a compiled loop's instructions disappear from the `vm:`
+  line; the `jit:` line above it says how many functions were compiled and how often they bailed
+  out.
+- **Expected.** For `loop_sum`, each bytecode instruction becomes a handful of machine
+  instructions with no dispatch, no operand decoding and no RK flag tests, so a large gain over
+  the register VM is plausible; the loads and stores to the frame on every instruction (D3) and
+  the guards are what is left. `fib` is not compiled (D7) and should be unchanged except for
+  the counting on each call. Nothing is measured yet.
+- **Measured.** Not yet. Row `09_jit` (`release-goto-nanbox`,
+  `--engine=jit --inline-cache --fold`) is in `scripts/ladder_configs.json`, but measuring it
+  needs an exclusive machine (D5), so there is no `results/09_jit.json` yet; the measurement and
+  the per-function compile times are issue #24. The row's arguments are cumulative (D4): the JIT
+  is the register VM plus machine code, so it accepts the register VM's `--inline-cache`, and the
+  row gains the superinstruction flag (rung 3d) when that lands, before it is measured. At the default
+  threshold, `bench/loop_sum.rg`'s `run` becomes hot through its loop's back-edges during the
+  first call and runs as machine code from the second.
+
 ### JIT crashes and their causes
+
+- **Baseline JIT (issue #23): no crash was hit while building it.** The direct tests of the
+  generated code (`tests/unit/jit_test.cpp`) and the conformance suite passed under ASan + UBSan
+  from their first run; the only failure was a wrong expected value in a new unit test.
 
 - **Intermittent SEGV calling freshly written code, Linux arm64, asan preset only (about 5% of
   runs).** First suspected the instruction cache. It was not: the same code with no flush at all

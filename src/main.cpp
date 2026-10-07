@@ -1,6 +1,7 @@
 #include <pthread.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -50,6 +51,8 @@ struct Options {
     bool superinstructions = false;
     std::optional<std::size_t> bench_iterations;
     std::string bench_out;
+    bool jit_log = false;
+    std::optional<std::uint32_t> jit_threshold;
     std::string engine = "tree";
     const char* path = nullptr;
 };
@@ -62,11 +65,12 @@ void print_usage() {
         separator = "|";
     }
     std::cerr << "] [--gc-stress] [--stats[=pairs]] [--fold] [--inline-cache]\n"
-                 "            [--superinstructions]\n"
+                 "            [--superinstructions] [--jit-threshold=N] [--jit-log]\n"
                  "            [--dump-tokens | --dump-ast | --dump-bytecode]\n"
                  "            [--bench=N --bench-out=FILE] <file.rg>\n"
-                 "       --dump-bytecode also accepts --engine=stack|register\n"
-                 "       --inline-cache and --superinstructions need --engine=register\n";
+                 "       --dump-bytecode also accepts --engine=stack|register|jit\n"
+                 "       --inline-cache and --superinstructions need --engine=register or jit\n"
+                 "       --jit-threshold (default 1000) and --jit-log need --engine=jit\n";
 }
 
 std::optional<std::string> read_file(const std::string& path) {
@@ -101,7 +105,7 @@ int run_bench_mode(const Options& options, rung::Engine& engine, const rung::Hea
         return kExitRuntimeError;
     }
     std::ofstream file(options.bench_out, std::ios::binary);
-    file << rung::bench_json(engine.name(), bench, heap.stats());
+    file << rung::bench_json(engine.name(), bench, heap.stats(), engine.jit_compile_ns());
     file.flush();
     if (!file) {
         std::cerr << "rung: cannot write '" << options.bench_out << "'\n";
@@ -116,7 +120,7 @@ void print_bytecode_size(const rung::Program& program, const std::string& engine
                          bool superinstructions) {
     rung::Heap heap;
     rung::BytecodeSize size;
-    if (engine == "register") {
+    if (engine == "register" || engine == "jit") {
         rung::RegCompileOptions compile_options;
         compile_options.superinstructions = superinstructions;
         rung::RegCompileResult compiled = rung::compile_register(program, heap, compile_options);
@@ -174,7 +178,7 @@ int execute(const Options& options) {
 
     if (options.want_bytecode) {
         rung::Heap heap;
-        if (options.engine == "register") {
+        if (options.engine == "register" || options.engine == "jit") {
             rung::RegCompileOptions compile_options;
             compile_options.superinstructions = options.superinstructions;
             rung::RegCompileResult compiled =
@@ -203,6 +207,8 @@ int execute(const Options& options) {
     rung::EngineOptions engine_options;
     engine_options.inline_cache = options.inline_cache;
     engine_options.superinstructions = options.superinstructions;
+    if (options.jit_threshold) engine_options.jit_threshold = *options.jit_threshold;
+    if (options.jit_log) engine_options.jit_log = stderr;
     std::unique_ptr<rung::Engine> engine =
         rung::make_engine(options.engine, heap, out, engine_options);
 
@@ -274,6 +280,18 @@ int execute_on_big_stack(const Options& options) {
     return job.exit_code;
 }
 
+// A positive decimal number that fits in 32 bits, or nothing.
+std::optional<std::uint32_t> parse_threshold(std::string_view text) {
+    if (text.empty() || text.size() > 10) return std::nullopt;
+    std::uint64_t value = 0;
+    for (char c : text) {
+        if (c < '0' || c > '9') return std::nullopt;
+        value = value * 10 + static_cast<std::uint64_t>(c - '0');
+    }
+    if (value == 0 || value > UINT32_MAX) return std::nullopt;
+    return static_cast<std::uint32_t>(value);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -281,6 +299,7 @@ int main(int argc, char** argv) {
     constexpr std::string_view kEnginePrefix = "--engine=";
     constexpr std::string_view kBenchPrefix = "--bench=";
     constexpr std::string_view kBenchOutPrefix = "--bench-out=";
+    constexpr std::string_view kThresholdPrefix = "--jit-threshold=";
 
     for (int i = 1; i < argc; ++i) {
         std::string_view arg = argv[i];
@@ -303,6 +322,14 @@ int main(int argc, char** argv) {
             options.inline_cache = true;
         } else if (arg == "--superinstructions") {
             options.superinstructions = true;
+        } else if (arg == "--jit-log") {
+            options.jit_log = true;
+        } else if (arg.substr(0, kThresholdPrefix.size()) == kThresholdPrefix) {
+            options.jit_threshold = parse_threshold(arg.substr(kThresholdPrefix.size()));
+            if (!options.jit_threshold) {
+                std::cerr << "rung: --jit-threshold needs a whole number from 1 to 4294967295\n";
+                return kExitUsage;
+            }
         } else if (arg.substr(0, kEnginePrefix.size()) == kEnginePrefix) {
             options.engine = std::string(arg.substr(kEnginePrefix.size()));
         } else if (arg.substr(0, kBenchPrefix.size()) == kBenchPrefix) {
@@ -337,22 +364,35 @@ int main(int argc, char** argv) {
     // format even where its engine is unavailable. "tree" (the default) dumps stack bytecode.
     std::vector<std::string_view> engines = rung::engine_names();
     bool runnable = std::find(engines.begin(), engines.end(), options.engine) != engines.end();
-    bool has_compiler = options.engine == "stack" || options.engine == "register";
+    bool has_compiler =
+        options.engine == "stack" || options.engine == "register" || options.engine == "jit";
+    if (!runnable && options.engine == "jit" && !options.want_bytecode) {
+        // Known, but not built here (notes D6, D16).
+        std::cerr << "rung: engine 'jit' is not available in this build (it needs an arm64 CPU "
+                     "and NaN-boxed values: the release-goto-nanbox or asan-goto-nanbox preset)\n";
+        return kExitUsage;
+    }
     if (!runnable && !(options.want_bytecode && has_compiler)) {
         std::cerr << "rung: unknown engine '" << options.engine << "'\n";
         print_usage();
         return kExitUsage;
     }
 
-    // Only the register VM has the rung. Refused, not ignored, so a flag on the command line
-    // always means what it says (the benchmark configurations rely on it).
-    if (options.inline_cache && options.engine != "register") {
-        std::cerr << "rung: --inline-cache needs --engine=register\n";
+    // Only the register VM (and the JIT, which is the register VM plus machine code) has the
+    // rung. Refused, not ignored, so a flag on the command line always means what it says (the
+    // benchmark configurations rely on it).
+    if (options.inline_cache && options.engine != "register" && options.engine != "jit") {
+        std::cerr << "rung: --inline-cache needs --engine=register or --engine=jit\n";
         print_usage();
         return kExitUsage;
     }
-    if (options.superinstructions && options.engine != "register") {
-        std::cerr << "rung: --superinstructions needs --engine=register\n";
+    if ((options.jit_threshold || options.jit_log) && options.engine != "jit") {
+        std::cerr << "rung: --jit-threshold and --jit-log need --engine=jit\n";
+        print_usage();
+        return kExitUsage;
+    }
+    if (options.superinstructions && options.engine != "register" && options.engine != "jit") {
+        std::cerr << "rung: --superinstructions needs --engine=register or --engine=jit\n";
         print_usage();
         return kExitUsage;
     }

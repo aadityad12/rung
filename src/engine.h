@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
@@ -56,26 +58,44 @@ public:
     // The most frequent pairs of opcodes dispatched back to back, for `--stats=pairs` (ladder
     // rung 3d). Empty for an engine that does not count them (the tree-walker has no opcodes).
     virtual std::string pair_report() const { return {}; }
+    // Total time the JIT has spent compiling, for bench mode's JSON (notes D16); nothing for an
+    // engine without a JIT.
+    virtual std::optional<std::uint64_t> jit_compile_ns() const { return std::nullopt; }
 };
 
 // Switches that change how an engine runs a program without changing what it computes. Each is
 // a ladder rung (notes D4), and an engine that does not have the rung refuses it.
 struct EngineOptions {
     // Ladder rung 3e: GET_GLOBAL and SET_GLOBAL remember their global's storage cell. Register
-    // VM only.
+    // VM and JIT (which is the register VM plus machine code) only.
     bool inline_cache = false;
     // Ladder rung 3d: the register compiler fuses adjacent instruction pairs into
-    // superinstructions. Register VM only.
+    // superinstructions. Register VM and JIT only.
     bool superinstructions = false;
+    // Calls plus loop back-edges after which a function is compiled (--jit-threshold, notes D16).
+    // Read only by --engine=jit.
+    std::uint32_t jit_threshold = 1000;
+    // Where --jit-log writes each compile, rejection and bail-out; null for no log.
+    std::FILE* jit_log = nullptr;
 };
 
-// Creates the engine called `name` ("tree", and later "stack", "register", "jit"), or null if
-// there is no such engine on this platform, or the engine lacks an option that is set. Registers
-// the engine's GC roots with `heap`.
+// Creates the engine called `name` ("tree", "stack", "register", or "jit" where the JIT is
+// built), or null if there is no such engine on this platform, or the engine lacks an option that
+// is set. Registers the engine's GC roots with `heap`.
 std::unique_ptr<Engine> make_engine(std::string_view name, Heap& heap, Output& out,
-                                    EngineOptions options = {});
+                                    const EngineOptions& options = {});
 
-// The names make_engine accepts, for usage messages.
+// The names make_engine accepts in this build, for usage messages.
 std::vector<std::string_view> engine_names();
+
+// Whether this build has the JIT (--engine=jit): it needs an arm64 CPU and the NaN-boxed value
+// layout (notes D3, D6, D16).
+constexpr bool jit_available() {
+#if RUNG_JIT
+    return true;
+#else
+    return false;
+#endif
+}
 
 }  // namespace rung
