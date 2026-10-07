@@ -84,7 +84,8 @@ std::string slurp(std::FILE* file) {
     return text;
 }
 
-EngineRun run_jit(const std::string& source, std::uint32_t threshold) {
+EngineRun run_jit(const std::string& source, std::uint32_t threshold,
+                  bool inline_cache = false) {
     ParseResult parsed = parse(source);
     REQUIRE(parsed.ok());
     REQUIRE_FALSE(resolve(*parsed.program).has_value());
@@ -97,6 +98,7 @@ EngineRun run_jit(const std::string& source, std::uint32_t threshold) {
         EngineOptions options;
         options.jit_threshold = threshold;
         options.jit_log = log_file;
+        options.inline_cache = inline_cache;
         std::unique_ptr<Engine> engine = make_engine("jit", heap, out, options);
         REQUIRE(engine != nullptr);
         CHECK(engine->name() == "jit");
@@ -262,6 +264,29 @@ TEST_CASE("jit engine: the register engine has no JIT and no compile time") {
     std::unique_ptr<Engine> engine = make_engine("register", heap, out);
     CHECK(engine->name() == "register");
     CHECK_FALSE(engine->jit_compile_ns().has_value());
+}
+
+TEST_CASE("jit engine: runs with the register VM's inline cache") {
+    // `step` is compiled; `run` reads the global `step` through the cache and stays in the VM.
+    const std::string source = R"(
+        fn step(x) { return x * 3 % 7; }
+        fn run(n) {
+            let x = 1;
+            let i = 0;
+            while (i < n) { x = step(x); i = i + 1; }
+            return x;
+        }
+        print run(10);
+        print run(11);
+    )";
+    EngineRun r = run_jit(source, 1, true);
+    CHECK(r.result.ok());
+    CHECK(r.output == "4\n5\n");
+    CHECK(count(r.log, "[jit] compiled step") == 1);
+    CHECK(count(r.log, "[jit] rejected run") == 1);
+#if RUNG_VM_COUNTERS
+    CHECK(r.stats.find("inline cache:") != std::string::npos);
+#endif
 }
 
 TEST_CASE("jit engine: a function is compiled when its calls reach the threshold") {
