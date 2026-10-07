@@ -51,7 +51,8 @@
     X(Eq) X(Ne) X(Lt) X(Le) X(Gt) X(Ge) X(Neg) X(Not)                                          \
     X(Jump) X(JumpIfFalse) X(JumpIfTrue)                                                       \
     X(Call) X(Closure) X(Capture) X(Close) X(Return) X(ReturnNil)                              \
-    X(Print) X(Array) X(ArrayAppend) X(IndexGet) X(IndexSet)
+    X(Print) X(Array) X(ArrayAppend) X(IndexGet) X(IndexSet)                                   \
+    X(LtJumpIfFalse) X(LeJumpIfFalse) X(AddJump) X(ModAdd) X(DivAdd) X(IndexSetAdd)
 
 #if RUNG_COMPUTED_GOTO
 

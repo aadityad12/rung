@@ -866,6 +866,133 @@ How D5's noise control became code, and the choices D5 left open:
   and the explanation of any difference from the expectation are to be filled in here then. If
   the register VM turns out slower, count instructions per benchmark before profiling (spec §13).
 
+### Ladder rung 3d: superinstructions
+
+- **What changed.** `--superinstructions` (register VM only; any other engine refuses it with exit
+  code 64, so a run can never be labelled with a rung it did not use) runs a peephole pass over
+  each function's finished register code (`src/superinstructions.cpp`) and fuses six pairs of
+  adjacent instructions. `--stats=pairs` (both VMs; needs a build with the VM counters) prints how
+  often opcode X was dispatched immediately after opcode Y. Every unit test and the whole
+  conformance suite pass with the flag on, with and without `--gc-stress`
+  (`conformance-register-superinstructions[-gc-stress]`), with every register-VM rung at once
+  (`conformance-register-all-rungs`: fusion, inline cache and folding), and the benchmark
+  checksums are checked with it (`bench-check-register-superinstructions`, release builds).
+- **What a superinstruction saves.** Dispatching an instruction means fetching its word, decoding
+  its opcode and doing an indirect branch to its handler. A fused pair does that once for two
+  instructions. The work the two halves do is unchanged (same operand decoding, same operations
+  from `src/runtime/`), so the saving is the dispatch between them and nothing else: it is
+  bounded by the share of run time that dispatch takes, which is what this rung measures.
+- **How a pair is fused: the second word stays where it is.** A fused instruction is the first
+  instruction of the pair with only its opcode byte changed (`LT` becomes `LT_JUMP_IF_FALSE`; A, B,
+  C and the flags are as the compiler wrote them). The second instruction is not removed: its
+  word stays in the next slot, and the fused handler reads it with `insn = *pc++` and runs it as
+  the instruction it still is. Nothing moves, so none of these needs repairing: jump offsets,
+  the line table (each half keeps its own line, so an error in the second half is reported on the
+  second half's line), and the inline cache (indexed by instruction position, rung 3e). A jump that
+  lands on the second word runs it as an ordinary instruction, which is why it must stay a whole
+  instruction. The price is that the code does not get smaller: the bytecode has the same number of
+  words with and without the flag (`--stats` prints the same `bytecode:` line). The alternative,
+  deleting the second word, would make code smaller but needs every jump to be retargeted, and
+  every jump that lands on the deleted word to be found first.
+- **The fused handlers are the plain handlers run back to back.** In `vm_reg.cpp` the body of each
+  instruction that can be half of a pair is a macro (`BODY_ADD`, `BODY_JUMP_IF_FALSE`, ...), used
+  by the plain handler and by the fused ones, so no rule exists twice. `LT_JUMP_IF_FALSE` is
+  `BODY_LT(); insn = *pc++; BODY_JUMP_IF_FALSE();`. The comparison still writes its bool to its
+  register: `and` and `or` keep the deciding value (`a < b and c` is `false` when the test fails,
+  notes §2.2), and the pass cannot know whether that register is read later.
+- **The pass.** One left-to-right scan per function, run when the function's code is complete. If
+  the opcodes of word `i` and `i+1` are a listed pair, word `i` becomes the fused opcode and the
+  scan continues at `i+2`: a pair never shares a word with the next pair, so `MOD ADD JUMP` fuses
+  `MOD ADD` and leaves `JUMP` alone, although `ADD JUMP` is also listed. Running the pass twice
+  changes nothing. `CAPTURE` words (operands of `CLOSURE`) are never half of a pair. The table is
+  `kFusedPairs` in `bytecode/register_code.h`, which also has `fused_first` and `fused_second`, so
+  the unfused program can be recovered from a fused one (and the JIT can treat a fused word as
+  its two halves).
+- **Where the six came from: data, from this benchmark suite.** `scripts/pair_counts.py` runs
+  `rung --engine=register --stats=pairs --bench=1` on each benchmark and writes
+  `docs/pair_counts.txt`, the 30 most frequent pairs of each benchmark (a ctest, `pair-counts`,
+  fails if the committed file is not what the build produces). Counts of consecutive pairs,
+  summed over the six benchmarks, for the pairs that matter here:
+
+  | Pair | Dispatches | Where | Adjacent in the code? | Fused? |
+  |---|---|---|---|---|
+  | `ADD -> JUMP` | 5,489,361 | every loop that ends with `i = i + 1` | yes | yes (`ADD_JUMP`) |
+  | `MOD -> ADD` | 4,600,000 | `loop_sum` (4.0M), `closures` | yes | yes (`MOD_ADD`) |
+  | `LT -> JUMP_IF_FALSE` | 4,389,778 | five of the six | yes | yes (`LT_JUMP_IF_FALSE`) |
+  | `JUMP -> LT` | 3,639,135 | the loop's jump back to its test | no: a jump | no |
+  | `ADD -> MOD` | 2,600,000 | `loop_sum`, `closures` | yes, overlaps `MOD ADD` | no |
+  | `JUMP_IF_FALSE -> MOD` | 2,000,000 | `loop_sum` | yes, but it is a branch | no |
+  | `LE -> JUMP_IF_FALSE` | 1,850,365 | `sieve` | yes | yes (`LE_JUMP_IF_FALSE`) |
+  | `INDEX_SET -> ADD` | 1,324,452 | `sieve` (1.25M), `nbody` | yes | yes (`INDEX_SET_ADD`) |
+  | `DIV -> ADD` | 1,200,240 | `nbody` | yes | yes (`DIV_ADD`) |
+  | `RETURN -> ADD` | 917,810 | after a call returns | no: crosses a return | no |
+
+  A pair is only worth fusing if the two instructions are next to each other in the code, not
+  only in time: `JUMP -> LT` and `CALL -> LT` are consecutive because a jump or a call went
+  somewhere, and they cannot be fused. Of the pairs that can, the six with the most dispatches
+  were taken. A pair that overlaps a better one gains nothing extra (only one of `MOD ADD` and
+  `ADD MOD` fits in `MOD ADD MOD ADD`), so `ADD MOD` was left out. A first version of the pass
+  also fused `GET_GLOBAL SUB` (635,620 dispatches, `fib` only), `MOVE MOVE` (650,000),
+  `INDEX_GET INDEX_GET` (525,060, `nbody` only), `MUL MUL` (350,019), `ADD MOD` (600,000) and
+  `GT JUMP_IF_FALSE` (50,010); each saved fewer dispatches than the smallest of the six kept
+  (`ADD_JUMP`, 964,789), so they were removed to keep the set small.
+- **Tuned to this benchmark suite (spec §5.5).** The six fusions are the pairs that happen most
+  in six programs that were written for another purpose, and the suite shapes the choice.
+  `loop_sum` keeps its sum in range with `%` because ints wrap (D1), so remainder-then-add is
+  4.0M of `MOD_ADD`'s 4.6M dispatches, and a program with no `%` gets nothing from it. `DIV_ADD`
+  is the Newton step in `nbody`'s `root`. `LE_JUMP_IF_FALSE` is `sieve`'s loop test, and `>`,
+  `>=`, `==` and `!=` tests have no fused form because the suite hardly uses them (`>` is 50,010
+  dispatches in `nbody`). Different programs would pick different pairs, and a gain measured on
+  these six is not evidence about other programs. That is why the pairs are reported by benchmark:
+  the honest reading is "this is what fusing the common pairs of this suite does to this suite".
+- **Instructions dispatched, without and with the fusions** (exact counts from the VM counters,
+  D5; `debug` build, `--stats --bench=1`, so the script's top level plus one call of `run()`;
+  counts, not timings; both `vm:` lines are in `docs/pair_counts.txt` and
+  `docs/pair_counts_fused.txt`):
+
+  | Benchmark | Plain | Fused | Fewer | `LT_JUMP_IF_FALSE` | `LE_JUMP_IF_FALSE` | `ADD_JUMP` | `MOD_ADD` | `DIV_ADD` | `INDEX_SET_ADD` |
+  |---|---|---|---|---|---|---|---|---|---|
+  | `closures` | 9,600,020 | 8,400,018 | 12.5% | 600,002 | 0 | 0 | 600,000 | 0 | 0 |
+  | `fib` | 4,131,542 | 3,495,921 | 15.4% | 635,621 | 0 | 0 | 0 | 0 | 0 |
+  | `loop_sum` | 14,000,008 | 8,000,007 | 42.9% | 2,000,001 | 0 | 0 | 4,000,000 | 0 | 0 |
+  | `nbody` | 8,491,383 | 6,395,976 | 24.7% | 790,152 | 0 | 30,015 | 0 | 1,200,240 | 75,000 |
+  | `sieve` | 9,902,205 | 6,201,614 | 37.4% | 0 | 1,850,365 | 600,774 | 0 | 0 | 1,249,452 |
+  | `strcat` | 1,910,017 | 1,212,015 | 36.5% | 364,002 | 0 | 334,000 | 0 | 0 | 0 |
+
+  The last six columns are dispatches of that superinstruction. Each replaced two dispatches, so
+  Plain minus Fused is their sum (a ctest checks that identity). The number of calls is unchanged.
+- **Expected.** Fewer dispatches by the percentages above, and a smaller gain in time than in
+  dispatches, because only the dispatch is saved and the handlers' work is the same. How much one
+  dispatch costs on an M1 with computed goto (rung 3a) is the open question the rung answers: the
+  branch predictor already predicts the indirect branches of a loop this regular well, so the
+  saving might be small. The rung should help most where dispatch is the largest share of the run
+  (`loop_sum`, `sieve`, `strcat`), and least in `fib` and `closures`, where calls and frame setup
+  dominate.
+- **Measured.** Not yet. Row `06_super` needs an exclusive machine (D5). Time per benchmark, and
+  the explanation of any difference from the expectation, are to be filled in here then. A result
+  that is small, or negative, is reported as it is.
+- **The unfused loop is not exactly the old loop.** The fused handlers are in the same dispatch
+  function as the plain ones. Without the flag they are never reached, but the compiler may lay
+  the function out differently (more labels, more code), so the previous row can move for reasons
+  unrelated to this change. Unlike the inline cache, there was no way to keep the plain loop
+  identical without duplicating the loop. If row 05 is measured on this build and differs from
+  an earlier measurement, say so.
+- **What the ladder rows must pass.** D4 makes the ladder cumulative, so `--superinstructions`
+  belongs in the arguments of every row from 06 on: `06_super` is
+  `--engine=register --superinstructions`, `07_ic` is `--engine=register --superinstructions
+  --inline-cache`, and `08_fold`, the only one of these in `scripts/ladder_configs.json` (with
+  `--engine=register --fold`), needs `--superinstructions --inline-cache --fold` before it is
+  measured, or it would measure folding without the two rungs below it. Rows 02 to 07 are not in
+  the file yet and the arguments of `08_fold` were not changed here, for the reason given under
+  rung 3e (adding them now would make the table compare the new rows with the tree-walker). The
+  three flags compose, and the suite runs with all three at once
+  (`conformance-register-all-rungs`).
+- **For later rungs.** The JIT (D3) compiles register bytecode, so with this flag on it sees fused
+  words: it must treat a fused word as its two halves (`fused_first`, `fused_second` and the next
+  word), or be given unfused code. No global access is fused, so rung 3e's rule (the cache slot at
+  an instruction's own index belongs to that instruction) is not exercised by a fused word; if one
+  is added, its first half must run before `pc` moves, as `GET_GLOBAL`'s does now.
+
 ### Ladder rung 3e: inline caching for globals
 
 - **What changed.** `--inline-cache` (register VM only; any other engine refuses it with exit

@@ -52,6 +52,10 @@ public:
     // Engine-specific lines for `--stats`, printed to stderr after the heap statistics (notes
     // D5). Empty for an engine with nothing to add.
     virtual std::string stats_report() const { return {}; }
+
+    // The most frequent pairs of opcodes dispatched back to back, for `--stats=pairs` (ladder
+    // rung 3d). Empty for an engine that does not count them (the tree-walker has no opcodes).
+    virtual std::string pair_report() const { return {}; }
 };
 
 // Switches that change how an engine runs a program without changing what it computes. Each is
@@ -60,6 +64,9 @@ struct EngineOptions {
     // Ladder rung 3e: GET_GLOBAL and SET_GLOBAL remember their global's storage cell. Register
     // VM only.
     bool inline_cache = false;
+    // Ladder rung 3d: the register compiler fuses adjacent instruction pairs into
+    // superinstructions. Register VM only.
+    bool superinstructions = false;
 };
 
 // Creates the engine called `name` ("tree", and later "stack", "register", "jit"), or null if

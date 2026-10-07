@@ -49,6 +49,7 @@ ctest --preset debug
 ./build/debug/rung --engine=stack --stats examples/hello.rg   # stack VM; debug builds also count instructions
 ./build/debug/rung --engine=register --stats examples/hello.rg   # register VM, same counters
 ./build/debug/rung --engine=register --inline-cache --stats examples/hello.rg   # globals without hash lookups
+./build/debug/rung --engine=register --superinstructions --stats=pairs examples/hello.rg   # fused pairs; which opcode follows which
 ./build/debug/rung --gc-stress --stats examples/hello.rg   # collect on every allocation; heap stats
 ./build/debug/rung --engine=register --fold --stats examples/hello.rg   # constant folding + dead-code removal
 ./build/debug/rung --dump-tokens examples/hello.rg
@@ -82,7 +83,9 @@ Five layers, each catching something the others cannot:
    `conformance-register`, `conformance-register-gc-stress`), and once more per engine with
    `--fold` (`conformance-<engine>-fold`; the register VM also with `--gc-stress`), since
    folding must not change what any program does, and the register VM once more with
-   `--inline-cache` (`conformance-register-inline-cache`, and with `--gc-stress`).
+   `--inline-cache` (`conformance-register-inline-cache`, and with `--gc-stress`), and once more with
+   `--superinstructions` (`conformance-register-superinstructions`, with `--gc-stress`, and with
+   all the register-VM rungs on at once as `conformance-register-all-rungs`).
 2. **Unit tests** (`tests/unit/`, [doctest](https://github.com/doctest/doctest)). Each C++
    module on its own: the lexer, parser, resolver, runtime and GC, the tree-walker, both
    compilers and both VMs, and the ARM64 encoder (checked byte for byte against LLVM).

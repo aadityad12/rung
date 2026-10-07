@@ -73,6 +73,21 @@ def main():
             check(run.returncode == 64 and "--inline-cache needs --engine=register" in run.stderr,
                   f"--inline-cache on {engine} must be a usage error, got {run.returncode}")
 
+        # --superinstructions (rung 3d) is the same kind of flag: register VM only, bench mode
+        # takes it, and the other engines refuse it.
+        run = rung("--engine=register", "--superinstructions", "--bench=3", f"--bench-out={out}")
+        check(run.returncode == 0 and not run.stdout,
+              f"--superinstructions bench: {run.returncode}")
+        if run.returncode == 0:
+            data = json.load(open(out))
+            check(data["engine"] == "register" and data["result"] == "n=x",
+                  "superinstructions result")
+        for engine in ("tree", "stack"):
+            run = rung(f"--engine={engine}", "--superinstructions")
+            check(run.returncode == 64
+                  and "--superinstructions needs --engine=register" in run.stderr,
+                  f"--superinstructions on {engine} must be a usage error, got {run.returncode}")
+
     for failure in failures:
         print("FAILURE:", failure, file=sys.stderr)
     return 1 if failures else 0

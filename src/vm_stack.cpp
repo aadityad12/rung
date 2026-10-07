@@ -175,6 +175,15 @@ std::string StackEngine::stats_report() const {
 #endif
 }
 
+std::string StackEngine::pair_report() const {
+#if RUNG_VM_COUNTERS
+    return counters_.pair_report(
+        [](std::size_t op) { return opcode_name(static_cast<OpCode>(op)); });
+#else
+    return "pairs: instruction counters are not compiled in (configure with -DRUNG_VM_COUNTERS=ON)\n";
+#endif
+}
+
 // ---- calls -----------------------------------------------------------------------------------
 
 // Calls the value below the `argc` arguments on top of the stack. For a Rung function it pushes
@@ -253,7 +262,7 @@ StackEngine::CallOutcome StackEngine::call_value(int argc) {
     } while (false)
 
 #if RUNG_VM_COUNTERS
-#define READ_OP() (++counters_.by_opcode[*ip], static_cast<OpCode>(*ip++))
+#define READ_OP() (counters_.count_dispatch(*ip), static_cast<OpCode>(*ip++))
 #else
 #define READ_OP() static_cast<OpCode>(READ_BYTE())
 #endif
@@ -276,6 +285,7 @@ bool StackEngine::execute(std::size_t stop_frames) {
     Value* base;
     const Value* constants;
     Value* sp = sp_;
+    counters_.restart_pairs();
     LOAD_FRAME();
 
     RUNG_DISPATCH()

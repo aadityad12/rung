@@ -34,6 +34,7 @@ public:
     EngineResult run(const Program& program) override;
     CallResult call_global(std::string_view name) override;
     std::string stats_report() const override;
+    std::string pair_report() const override;
 
     const VmCounters& counters() const { return counters_; }
 

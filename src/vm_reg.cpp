@@ -14,7 +14,7 @@
 
 namespace rung {
 
-RegisterEngine::RegisterEngine(Heap& heap, Output& out, bool inline_cache)
+RegisterEngine::RegisterEngine(Heap& heap, Output& out, bool inline_cache, bool superinstructions)
     : heap_(heap),
       out_(out),
       // `new Value[n]` without braces leaves the slots uninitialised, so no page is touched.
@@ -22,7 +22,8 @@ RegisterEngine::RegisterEngine(Heap& heap, Output& out, bool inline_cache)
       registers_(register_storage_.get()),
       register_end_(registers_ + kRegisterSlots),
       frames_(new CallFrame[kMaxFrames]),
-      inline_cache_(inline_cache) {
+      inline_cache_(inline_cache),
+      superinstructions_(superinstructions) {
     registers_[0] = make_nil();
     // The root marker goes in first: register_natives allocates, and each native must already
     // be reachable through globals_ by the time the next allocation collects.
@@ -147,11 +148,14 @@ void RegisterEngine::attach_global_caches(ObjFunction* function) {
 
 EngineResult RegisterEngine::run(const Program& program) {
     EngineResult result;
-    RegCompileResult compiled = compile_register(program, heap_);
+    RegCompileOptions compile_options;
+    compile_options.superinstructions = superinstructions_;
+    RegCompileResult compiled = compile_register(program, heap_, compile_options);
     if (!compiled.ok()) {
         result.compile_error = compiled.error;
         return result;
     }
+    fused_pairs_ = compiled.fused_pairs;
     // The script function is held only by `compiled` until it is in slot 0 (always marked), and
     // nothing has allocated since compile_register returned. Then its closure replaces it there,
     // as the callee of the entry frame.
@@ -199,10 +203,15 @@ CallResult RegisterEngine::call_global(std::string_view name) {
 }
 
 std::string RegisterEngine::stats_report() const {
+    // A static count of the program, so it does not need the VM counters.
+    std::string text;
+    if (superinstructions_) {
+        text += "superinstructions: pairs fused: " + std::to_string(fused_pairs_) + "\n";
+    }
 #if RUNG_VM_COUNTERS
-    std::string text = "vm: " + std::to_string(counters_.instructions()) +
-                       " instructions dispatched, " + std::to_string(counters_.rung_calls) +
-                       " calls, " + std::to_string(counters_.native_calls) + " native calls\n";
+    text += "vm: " + std::to_string(counters_.instructions()) + " instructions dispatched, " +
+            std::to_string(counters_.rung_calls) + " calls, " +
+            std::to_string(counters_.native_calls) + " native calls\n";
     if (inline_cache_) {
         text += "inline cache: " + std::to_string(counters_.global_cache_hits) + " hits, " +
                 std::to_string(counters_.global_cache_misses) + " misses\n";
@@ -216,7 +225,17 @@ std::string RegisterEngine::stats_report() const {
     }
     return text;
 #else
-    return "vm: instruction counters are not compiled in (configure with -DRUNG_VM_COUNTERS=ON)\n";
+    return text +
+           "vm: instruction counters are not compiled in (configure with -DRUNG_VM_COUNTERS=ON)\n";
+#endif
+}
+
+std::string RegisterEngine::pair_report() const {
+#if RUNG_VM_COUNTERS
+    return counters_.pair_report(
+        [](std::size_t op) { return reg_opcode_name(static_cast<RegOp>(op)); });
+#else
+    return "pairs: instruction counters are not compiled in (configure with -DRUNG_VM_COUNTERS=ON)\n";
 #endif
 }
 
@@ -335,8 +354,35 @@ RegisterEngine::CallOutcome RegisterEngine::call_value(Value* callee_slot, int a
 #define RK_C()                                                                       \
     ((insn_flags(insn) & kFlagCConst) != 0 ? constants[insn_c(insn)] : base[insn_c(insn)])
 
+// The body of each instruction that can be the half of a superinstruction (ladder rung 3d). The
+// plain handler and the fused handlers expand the same macro, so there is one copy of each rule.
+// A body reads the operands of the instruction in `insn` and may fail.
+// Operations that can fail: the operands are read (op_add allocates for a string result, and
+// operands in registers or constants stay rooted through the frame), then the result goes to
+// R[A]. The do-block also closes the std::string's scope before RUNG_NEXT() (see below).
+#define CHECKED_OP(call)                     \
+    do {                                     \
+        Value result;                        \
+        std::string error;                   \
+        if (!(call)) FAIL(std::move(error)); \
+        REG_A() = result;                    \
+    } while (false)
+#define BODY_ADD() CHECKED_OP(op_add(heap_, RK_B(), RK_C(), &result, &error))
+#define BODY_DIV() CHECKED_OP(op_div(RK_B(), RK_C(), &result, &error))
+#define BODY_MOD() CHECKED_OP(op_mod(RK_B(), RK_C(), &result, &error))
+#define BODY_LT() CHECKED_OP(op_less(RK_B(), RK_C(), &result, &error))
+#define BODY_LE() CHECKED_OP(op_less_equal(RK_B(), RK_C(), &result, &error))
+// Offsets count instructions from the one after the jump, which is where pc already is.
+#define BODY_JUMP() (pc += insn_sbx(insn))
+#define BODY_JUMP_IF_FALSE() (!is_truthy(REG_A()) ? (void)(pc += insn_sbx(insn)) : (void)0)
+#define BODY_INDEX_SET()                                                          \
+    do {                                                                          \
+        std::string error;                                                        \
+        if (!array_set(REG_A(), RK_B(), RK_C(), &error)) FAIL(std::move(error));  \
+    } while (false)
+
 #if RUNG_VM_COUNTERS
-#define RUNG_FETCH() (insn = *pc++, ++counters_.by_opcode[insn & 0xFFu], insn_op(insn))
+#define RUNG_FETCH() (insn = *pc++, counters_.count_dispatch(insn & 0xFFu), insn_op(insn))
 #else
 #define RUNG_FETCH() (insn = *pc++, insn_op(insn))
 #endif
@@ -351,6 +397,7 @@ static_assert(kRegOpCount == 0 RUNG_REG_OPCODE_LIST(RUNG_COUNT_OP_),
 // runtime error happens. Returns true with the entry frame's result in result_, or false with
 // error_ set (the caller unwinds, see take_error). The entry frame must already be pushed.
 bool RegisterEngine::execute(std::size_t stop_frames) {
+    counters_.restart_pairs();
     return inline_cache_ ? execute_loop<true>(stop_frames) : execute_loop<false>(stop_frames);
 }
 
@@ -436,22 +483,11 @@ bool RegisterEngine::execute_loop(std::size_t stop_frames) {
         RUNG_NEXT();
     }
 
-// Operations that can fail: the operands are read (op_add allocates for a string result, and
-// operands in registers or constants stay rooted through the frame), then the result goes to
-// R[A]. The do-block also closes the std::string's scope before RUNG_NEXT() (see below).
-#define CHECKED_OP(call)                     \
-    do {                                     \
-        Value result;                        \
-        std::string error;                   \
-        if (!(call)) FAIL(std::move(error)); \
-        REG_A() = result;                    \
-    } while (false)
-
     // A handler's locals with destructors (std::string, std::vector) sit in an inner block that
     // closes before RUNG_NEXT(): a computed `goto *` may not jump out of such a variable's
     // scope, and the switch build would compile either way.
     RUNG_CASE(Add) {
-        CHECKED_OP(op_add(heap_, RK_B(), RK_C(), &result, &error));
+        BODY_ADD();
         RUNG_NEXT();
     }
     RUNG_CASE(Sub) {
@@ -463,11 +499,11 @@ bool RegisterEngine::execute_loop(std::size_t stop_frames) {
         RUNG_NEXT();
     }
     RUNG_CASE(Div) {
-        CHECKED_OP(op_div(RK_B(), RK_C(), &result, &error));
+        BODY_DIV();
         RUNG_NEXT();
     }
     RUNG_CASE(Mod) {
-        CHECKED_OP(op_mod(RK_B(), RK_C(), &result, &error));
+        BODY_MOD();
         RUNG_NEXT();
     }
     RUNG_CASE(Eq) {
@@ -479,11 +515,11 @@ bool RegisterEngine::execute_loop(std::size_t stop_frames) {
         RUNG_NEXT();
     }
     RUNG_CASE(Lt) {
-        CHECKED_OP(op_less(RK_B(), RK_C(), &result, &error));
+        BODY_LT();
         RUNG_NEXT();
     }
     RUNG_CASE(Le) {
-        CHECKED_OP(op_less_equal(RK_B(), RK_C(), &result, &error));
+        BODY_LE();
         RUNG_NEXT();
     }
     RUNG_CASE(Gt) {
@@ -505,11 +541,11 @@ bool RegisterEngine::execute_loop(std::size_t stop_frames) {
 
     // Offsets count instructions from the one after the jump, which is where pc already is.
     RUNG_CASE(Jump) {
-        pc += insn_sbx(insn);
+        BODY_JUMP();
         RUNG_NEXT();
     }
     RUNG_CASE(JumpIfFalse) {
-        if (!is_truthy(REG_A())) pc += insn_sbx(insn);
+        BODY_JUMP_IF_FALSE();
         RUNG_NEXT();
     }
     RUNG_CASE(JumpIfTrue) {
@@ -612,12 +648,56 @@ bool RegisterEngine::execute_loop(std::size_t stop_frames) {
         RUNG_NEXT();
     }
     RUNG_CASE(IndexSet) {
-        {
-            std::string error;
-            if (!array_set(REG_A(), RK_B(), RK_C(), &error)) FAIL(std::move(error));
-        }
+        BODY_INDEX_SET();
         RUNG_NEXT();
     }
+
+    // Superinstructions (ladder rung 3d, bytecode/register_code.h "Fusion"). Each runs the body
+    // of its first half, which is the instruction in this word, then takes the word after it
+    // (`insn = *pc++`) and runs the body of its second half exactly as that instruction's own
+    // handler would: same macros, same operand decoding, and a failure in either half reports the
+    // line of the half that failed, because `pc` has moved past exactly the words consumed. The
+    // bodies are the ones the plain handlers above use, so a rule exists once. What is saved is
+    // the dispatch between the halves. (If a global access is ever fused, its first half must
+    // run before `pc` moves, so it still uses the cache slot at the fused word's own index.)
+#define SECOND_HALF() (insn = *pc++)
+    RUNG_CASE(LtJumpIfFalse) {
+        BODY_LT();
+        SECOND_HALF();
+        BODY_JUMP_IF_FALSE();
+        RUNG_NEXT();
+    }
+    RUNG_CASE(LeJumpIfFalse) {
+        BODY_LE();
+        SECOND_HALF();
+        BODY_JUMP_IF_FALSE();
+        RUNG_NEXT();
+    }
+    RUNG_CASE(AddJump) {
+        BODY_ADD();
+        SECOND_HALF();
+        BODY_JUMP();
+        RUNG_NEXT();
+    }
+    RUNG_CASE(ModAdd) {
+        BODY_MOD();
+        SECOND_HALF();
+        BODY_ADD();
+        RUNG_NEXT();
+    }
+    RUNG_CASE(DivAdd) {
+        BODY_DIV();
+        SECOND_HALF();
+        BODY_ADD();
+        RUNG_NEXT();
+    }
+    RUNG_CASE(IndexSetAdd) {
+        BODY_INDEX_SET();
+        SECOND_HALF();
+        BODY_ADD();
+        RUNG_NEXT();
+    }
+#undef SECOND_HALF
 
     RUNG_END_DISPATCH()
 }
@@ -635,5 +715,13 @@ bool RegisterEngine::execute_loop(std::size_t stop_frames) {
 #undef RUNG_OP_ENUM
 #undef RUNG_OP_LIST
 #undef CHECKED_OP
+#undef BODY_ADD
+#undef BODY_DIV
+#undef BODY_MOD
+#undef BODY_LT
+#undef BODY_LE
+#undef BODY_JUMP
+#undef BODY_JUMP_IF_FALSE
+#undef BODY_INDEX_SET
 
 }  // namespace rung

@@ -23,6 +23,8 @@ def main():
     parser.add_argument("--engine", required=True)
     parser.add_argument("--inline-cache", action="store_true",
                         help="pass --inline-cache (register engine only)")
+    parser.add_argument("--superinstructions", action="store_true",
+                        help="pass --superinstructions (register engine only)")
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
 
@@ -40,6 +42,8 @@ def main():
             cmd = [args.rung, f"--engine={args.engine}"]
             if args.inline_cache:
                 cmd.append("--inline-cache")
+            if args.superinstructions:
+                cmd.append("--superinstructions")
             cmd += ["--bench=1", f"--bench-out={out}", os.path.join(bench_dir, name + ".rg")]
             try:
                 run = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)

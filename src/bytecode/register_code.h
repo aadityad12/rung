@@ -14,7 +14,8 @@ namespace rung {
 // de Figueiredo, Celes): locals live in fixed registers of the frame, temporaries are allocated
 // above them in stack order, a call puts the callee and its arguments in consecutive registers
 // and the result comes back in the callee's register. It differs in the instruction word (below)
-// and in having no compare-and-jump instructions yet (superinstructions are ladder rung 3d).
+// and in having no compare-and-jump instructions of its own (with --superinstructions, ladder
+// rung 3d, a peephole pass fuses a comparison and its jump into one dispatch; see "Fusion").
 //
 // One instruction is one fixed 64-bit word:
 //
@@ -86,10 +87,73 @@ enum class RegOp : std::uint8_t {
                    //            than kArrayBatch elements are built a batch at a time)
     IndexGet,      // A RK(B) RK(C)   R[A] = RK(B)[RK(C)]
     IndexSet,      // A RK(B) RK(C)   R[A][RK(B)] = RK(C)   (A is a register; no value is produced)
+
+    // Superinstructions (ladder rung 3d, --superinstructions). The compiler never emits these;
+    // the peephole pass in superinstructions.cpp turns the opcode of the first of two adjacent
+    // instructions into one of them. See fusion below for what that means.
+    LtJumpIfFalse,  // Lt then JumpIfFalse: a "less than" test and the branch on its result
+    LeJumpIfFalse,  // Le then JumpIfFalse
+    AddJump,        // Add then Jump: the last statement of a loop body, and the jump back
+    ModAdd,         // Mod then Add
+    DivAdd,         // Div then Add
+    IndexSetAdd,    // IndexSet then Add
 };
 
 // Number of register opcodes (for per-opcode tables such as the VM's instruction counters).
-constexpr std::size_t kRegOpCount = static_cast<std::size_t>(RegOp::IndexSet) + 1;
+constexpr std::size_t kRegOpCount = static_cast<std::size_t>(RegOp::IndexSetAdd) + 1;
+
+// Fusion (ladder rung 3d). A superinstruction is a pair of adjacent instructions that the VM
+// runs without dispatching in between. Its first word is the first instruction exactly as the
+// compiler wrote it (same A, B, C and flags) with only the opcode byte changed; the second word
+// is left where it was and becomes the fused instruction's second operand word, which the VM
+// reads with `*pc++` and decodes as the instruction it still is. So fusing never moves,
+// inserts or deletes a word: every jump offset, every line-table entry and every inline-cache
+// slot (indexed by instruction, notes §5 rung 3e) stays valid, and a jump that lands on the
+// second word runs it as an ordinary instruction. Running a fused instruction is by definition
+// running its two halves in order; what it saves is the dispatch (fetch, decode, indirect
+// branch) between them. A fused word is never anything but the first half of a pair, so the
+// unfused program is recovered by putting `fused_first` back in the opcode byte.
+struct FusedPair {
+    RegOp fused;
+    RegOp first;
+    RegOp second;
+};
+inline constexpr FusedPair kFusedPairs[] = {
+    {RegOp::LtJumpIfFalse, RegOp::Lt, RegOp::JumpIfFalse},
+    {RegOp::LeJumpIfFalse, RegOp::Le, RegOp::JumpIfFalse},
+    {RegOp::AddJump, RegOp::Add, RegOp::Jump},
+    {RegOp::ModAdd, RegOp::Mod, RegOp::Add},
+    {RegOp::DivAdd, RegOp::Div, RegOp::Add},
+    {RegOp::IndexSetAdd, RegOp::IndexSet, RegOp::Add},
+};
+inline constexpr std::size_t kFusedPairCount = sizeof kFusedPairs / sizeof kFusedPairs[0];
+// The fused opcodes are the last kFusedPairCount enumerators, in the order of kFusedPairs.
+inline constexpr std::size_t kFirstFusedOp = kRegOpCount - kFusedPairCount;
+
+constexpr bool fused_table_in_enum_order() {
+    for (std::size_t i = 0; i < kFusedPairCount; ++i) {
+        if (static_cast<std::size_t>(kFusedPairs[i].fused) != kFirstFusedOp + i) return false;
+    }
+    return true;
+}
+static_assert(fused_table_in_enum_order(),
+              "kFusedPairs must list the fused opcodes in enum order, with none after them");
+
+constexpr bool is_fused(RegOp op) { return static_cast<std::size_t>(op) >= kFirstFusedOp; }
+// The two halves of a fused opcode (undefined for any other opcode).
+constexpr RegOp fused_first(RegOp op) {
+    return kFusedPairs[static_cast<std::size_t>(op) - kFirstFusedOp].first;
+}
+constexpr RegOp fused_second(RegOp op) {
+    return kFusedPairs[static_cast<std::size_t>(op) - kFirstFusedOp].second;
+}
+// The fused opcode for the adjacent pair (first, second), or `first` itself when there is none.
+constexpr RegOp fuse_pair(RegOp first, RegOp second) {
+    for (const FusedPair& pair : kFusedPairs) {
+        if (pair.first == first && pair.second == second) return pair.fused;
+    }
+    return first;
+}
 
 // The most elements one Array / ArrayAppend instruction takes; they are evaluated into
 // consecutive registers first, so this bounds the registers an array literal needs.
