@@ -360,6 +360,53 @@ class LadderTest(unittest.TestCase):
         self.assertIn("‡ marks a JIT row's cell", text)
         self.assertIn("`beta`: rejected for a reason", text)
 
+    def test_background_comparison_is_its_own_table(self):
+        # Configurations marked "ladder": false (notes D8's sync / background pair) get a table
+        # of p50 / p99 / max per benchmark, and stay out of the speedup tables and the summary.
+        extras = [{"id": "x_sync", "label": "Sync", "ladder": False, "preset": "release",
+                   "args": ["--engine=jit"]},
+                  {"id": "x_bg", "label": "Background", "ladder": False, "preset": "release",
+                   "args": ["--engine=jit", "--jit-background"]}]
+        write(os.path.join(self.root, "scripts", "ladder_configs.json"),
+              json.dumps(self.CONFIGS + extras))
+        write(os.path.join(self.root, "bench", "expected.json"),
+              json.dumps({"beta": "1", "alpha": "2", "warm": "3"}))
+        self.fill()
+        run_main(ladder, ["--root", self.root])
+        self.assertIn("Not measured yet: `python3 scripts/bench.py --configs x_sync x_bg`",
+                      self.readme())
+
+        names = ("alpha", "beta", "warm")
+        synthetic_results(self.root, extras[0], {"alpha": 1000, "beta": 2000, "warm": 3000},
+                          p99=5_000_000, benchmarks=names)
+        synthetic_results(self.root, extras[1], {"alpha": 1000, "beta": 2000, "warm": 3000},
+                          p99=4_000_000, benchmarks=names)
+        self.assertEqual(run_main(ladder, ["--root", self.root])[0], 0)
+        text = self.readme()
+        self.assertIn("**Background compilation** (notes D8): `x_sync` (Sync) against `x_bg` "
+                      "(Background).", text)
+        self.assertIn("Measured in one `bench.py` invocation", text)
+        self.assertIn("| Benchmark | `x_sync` p50 | `x_sync` p99 | `x_sync` max | `x_bg` p50 | "
+                      "`x_bg` p99 | `x_bg` max |", text)
+        self.assertIn("| `warm` | 0.00 | 5.00 | 0.00 | 0.00 | 4.00 | 0.00 |", text)
+        # Only the extras measured `warm`, so the ladder tables get no column for it.
+        self.assertIn("| Configuration | beta | alpha |", text)
+        self.assertNotIn("x_sync` Sync |", text.split("**Background compilation**")[0])
+        # Both are listed under provenance.
+        self.assertIn("| `x_bg` Background | `0123456789` |", text)
+        start = text.index(ladder.SUMMARY_START_MARKER)
+        self.assertNotIn("x_", text[start:text.index(ladder.SUMMARY_END_MARKER)])
+
+        # Results from two invocations are not interleaved, and the table says so.
+        path = os.path.join(self.root, "results", "x_bg.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["meta"]["date"] = "2026-10-02T10:00:00Z"
+        write(path, json.dumps(data))
+        run_main(ladder, ["--root", self.root])
+        self.assertIn("Measured in different `bench.py` invocations, so not interleaved",
+                      self.readme())
+
     def test_no_compile_time_table_without_jit_results(self):
         self.fill()
         self.assertEqual(run_main(ladder, ["--root", self.root])[0], 0)
@@ -430,13 +477,14 @@ class RepositoryConfigsTest(unittest.TestCase):
 
     # Flags that only some engines accept (src/main.cpp refuses them elsewhere).
     REGISTER_OR_JIT_ONLY = {"--superinstructions", "--inline-cache"}
+    JIT_ONLY = {"--jit-background"}
 
     def configs(self):
         return bench.load_configs(ROOT)
 
     def test_rows_are_the_cumulative_ladder(self):
         got = []
-        for config in self.configs():
+        for config in [c for c in self.configs() if ladder.is_ladder_row(c)]:
             engines = [a for a in config["args"] if a.startswith("--engine=")]
             self.assertEqual(len(engines), 1, config["id"])
             flags = [a for a in config["args"] if not a.startswith("--engine=")]
@@ -460,8 +508,22 @@ class RepositoryConfigsTest(unittest.TestCase):
                     self.assertIn(engine, ("tree", "stack", "register", "jit"), config["id"])
                 elif arg in self.REGISTER_OR_JIT_ONLY:
                     self.assertIn(engine, ("register", "jit"), f"{config['id']}: {arg}")
+                elif arg in self.JIT_ONLY:
+                    self.assertEqual(engine, "jit", f"{config['id']}: {arg}")
                 else:
                     self.assertEqual(arg, "--fold", f"{config['id']}: unknown flag {arg}")
+
+    def test_the_background_pair_differs_from_row_09_only_in_where_it_compiles(self):
+        # Notes D8: synchronous against background compilation, measured together. The sync
+        # side repeats row 09 exactly, so the pair isolates --jit-background.
+        by_id = {c["id"]: c for c in self.configs()}
+        sync, background = by_id["jit_sync"], by_id["jit_background"]
+        self.assertFalse(ladder.is_ladder_row(sync))
+        self.assertFalse(ladder.is_ladder_row(background))
+        self.assertEqual(sync["preset"], by_id["09_jit"]["preset"])
+        self.assertEqual(sync["args"], by_id["09_jit"]["args"])
+        self.assertEqual(background["preset"], sync["preset"])
+        self.assertEqual(background["args"], sync["args"] + ["--jit-background"])
 
     def test_the_jit_row_needs_an_arm64_nanbox_build(self):
         # main.cpp: "--engine=jit" exists only with NaN-boxed values (notes D16).

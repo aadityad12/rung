@@ -151,3 +151,37 @@ pairs: 1212013 opcode pairs dispatched, 14 distinct
   DEFINE_GLOBAL  -> RETURN_NIL                1    0.0%
   ADD            -> RETURN                    1    0.0%
   CLOSURE        -> DEFINE_GLOBAL             1    0.0%
+
+== warmup
+vm: 100422 instructions dispatched, 65 calls, 0 native calls
+pairs: 100420 opcode pairs dispatched, 36 distinct
+  ADD_JUMP       -> LT_JUMP_IF_FALSE        11952   11.9%
+  LT_JUMP_IF_FALSE -> MOD                    7984    8.0%
+  MOD            -> EQ                     7968    7.9%
+  EQ             -> JUMP_IF_FALSE          7968    7.9%
+  ADD            -> MOD_ADD                5324    5.3%
+  MUL            -> ADD                    5324    5.3%
+  ADD            -> MOD                    4048    4.0%
+  MOD            -> MOVE                   4047    4.0%
+  MOVE           -> MOVE                   3984    4.0%
+  MOVE           -> ADD_JUMP               3984    4.0%
+  JUMP           -> LT_JUMP_IF_FALSE         3984    4.0%
+  LT_JUMP_IF_FALSE -> ADD                    3984    4.0%
+  LT_JUMP_IF_FALSE -> MUL                    3984    4.0%
+  MOD_ADD        -> JUMP                   3984    4.0%
+  MOD_ADD        -> ADD_JUMP               3984    4.0%
+  SUB            -> ADD_JUMP               3494    3.5%
+  JUMP_IF_FALSE  -> SUB                    3494    3.5%
+  DIV            -> JUMP                   2644    2.6%
+  JUMP           -> MOD_ADD                2644    2.6%
+  JUMP_IF_FALSE  -> DIV                    2644    2.6%
+  JUMP_IF_FALSE  -> MUL                    1340    1.3%
+  JUMP_IF_FALSE  -> ADD_JUMP                490    0.5%
+  ADD_JUMP       -> ADD_JUMP                490    0.5%
+  LOADK          -> LOADK                    97    0.1%
+  CLOSURE        -> DEFINE_GLOBAL            65    0.1%
+  MOVE           -> GET_GLOBAL               64    0.1%
+  MOVE           -> CALL                     64    0.1%
+  LOADK          -> LT_JUMP_IF_FALSE           64    0.1%
+  GET_GLOBAL     -> MOVE                     64    0.1%
+  DEFINE_GLOBAL  -> CLOSURE                  64    0.1%

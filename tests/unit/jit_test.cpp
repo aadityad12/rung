@@ -11,13 +11,17 @@
 #include <string>
 #include <vector>
 
+#include "compiler_reg.h"
 #include "engine.h"
 #include "jit/exec_memory.h"
+#include "jit/jit.h"
 #include "jit/jit_compiler.h"
 #include "output.h"
 #include "parser.h"
 #include "resolver.h"
 #include "runtime/function.h"
+#include "runtime/heap.h"
+#include "vm_reg.h"
 
 using namespace rung;
 
@@ -378,4 +382,215 @@ TEST_CASE("jit engine: division by zero in machine code is the VM's error, on th
     CHECK(r.result.runtime_error->line == 3);
     CHECK(r.result.runtime_error->message == "division by zero");
     CHECK(count(r.log, "bail-out in d at instruction 0 (DIV, line 3)") == 1);
+}
+
+// ---- background compilation (Engine 5, notes D8) ---------------------------------------------
+
+namespace {
+
+// The register-compiled function called `name`, found through the script's constants.
+ObjFunction* find_function(ObjFunction* in, const std::string& name) {
+    for (Value constant : in->reg.constants) {
+        if (!is_function(constant)) continue;
+        ObjFunction* function = as_function(constant);
+        if (function->name != nullptr && function->name->chars == name) return function;
+        if (ObjFunction* nested = find_function(function, name)) return nested;
+    }
+    return nullptr;
+}
+
+std::unique_ptr<Program> parse_and_resolve(const std::string& source) {
+    ParseResult parsed = parse(source);
+    REQUIRE(parsed.ok());
+    REQUIRE_FALSE(resolve(*parsed.program).has_value());
+    return std::move(parsed.program);
+}
+
+// `sum_k(n)` returns 0 + k + 2k + ... + (n-1)k, and is inside the JIT's whitelist.
+std::string summing_functions(int count) {
+    std::string source;
+    for (int k = 0; k < count; ++k) {
+        source += "fn sum_" + std::to_string(k) +
+                  "(n) { let s = 0; let i = 0; while (i < n) { s = s + i * " +
+                  std::to_string(k) + "; i = i + 1; } return s; }\n";
+    }
+    return source;
+}
+
+// Runs `function`'s published machine code on a fresh frame with `n` as its argument and returns
+// what it returned, the way the VM would: the code stops at the RETURN, which names the register.
+std::int32_t run_published(ObjFunction& function, JitEntry entry, std::int32_t n) {
+    std::vector<Value> registers(static_cast<std::size_t>(function.reg.frame_size), make_nil());
+    registers[0] = make_int(n);
+    const Instruction at = function.reg.code[entry(registers.data())];
+    REQUIRE(insn_op(at) == RegOp::Return);
+    REQUIRE(is_int(registers[insn_b(at)]));
+    return as_int(registers[insn_b(at)]);
+}
+
+}  // namespace
+
+TEST_CASE("jit background: hot functions compile on the compiler thread and the VM enters them") {
+    // f is queued on its first call (threshold 1) and runs in the VM meanwhile. After the
+    // compiler thread is done, calling it through `float_call` enters the machine code, whose
+    // guard fails on the float: the logged bail-out proves the published code ran.
+    const std::string source = R"(
+        fn f(a, n) { let s = 0; let i = 0; while (i < n) { s = s + a; i = i + 1; } return s; }
+        fn int_call() { return f(2, 5); }
+        fn float_call() { return f(0.5, 3); }
+        print f(1, 3);
+    )";
+    std::unique_ptr<Program> program = parse_and_resolve(source);
+    std::FILE* out_file = std::tmpfile();
+    std::FILE* log_file = std::tmpfile();
+    {
+        Heap heap;
+        Output out(out_file);
+        EngineOptions options;
+        options.jit_threshold = 1;
+        options.jit_log = log_file;
+        options.jit_background = true;
+        RegisterEngine engine(heap, out, options);
+        CHECK(engine.name() == "jit");
+        REQUIRE(engine.run(*program).ok());
+        REQUIRE(engine.jit() != nullptr);
+        engine.jit()->wait_until_idle();
+        CHECK(engine.jit()->functions_compiled() == 1);  // f; int_call and float_call never ran
+        CallResult ints = engine.call_global("int_call");
+        REQUIRE(ints.ok());
+        CHECK(as_int(ints.value) == 10);
+        CallResult floats = engine.call_global("float_call");
+        REQUIRE(floats.ok());
+        CHECK(as_float(floats.value) == 1.5);
+        engine.jit()->wait_until_idle();  // int_call and float_call were queued, then rejected
+        CHECK(engine.jit()->functions_rejected() == 2);
+        CHECK(engine.stats_report().find("on the compiler thread, 0 queued or in progress") !=
+              std::string::npos);
+        out.flush();
+    }
+    CHECK(slurp(out_file) == "3\n");
+    const std::string log = slurp(log_file);
+    CHECK(count(log, "[jit] compiled f: ") == 1);
+    CHECK(count(log, " on the compiler thread\n") == 3);
+    CHECK(count(log, "[jit] bail-out in f") == 1);
+    std::fclose(out_file);
+    std::fclose(log_file);
+}
+
+TEST_CASE("jit background: a queued function is a GC root until the compiler has published it") {
+    std::unique_ptr<Program> program = parse_and_resolve(summing_functions(1));
+    Heap heap;
+    jit::Jit jit(1, nullptr, true);
+    Heap::RootHandle roots = heap.add_root_marker([&jit](Heap& h) { jit.mark_pending(h); });
+    RegCompileResult compiled = compile_register(*program, heap);
+    REQUIRE(compiled.ok());
+    ObjFunction* function = find_function(compiled.function, "sum_0");
+    REQUIRE(function != nullptr);
+
+    jit.hold_for_testing(true);  // keep it queued while the collector runs
+    jit.enqueue(*function);
+    CHECK(function->jit_status == JitStatus::Queued);
+    // Nothing else reaches the function: the script, its only owner, is not rooted, so this
+    // collection frees the script, and would free the function too without mark_pending.
+    heap.collect();
+    const std::size_t live_while_queued = heap.stats().live_objects;
+    CHECK(live_while_queued >= 2);  // the function and its name, at least
+
+    jit.hold_for_testing(false);
+    jit.wait_until_idle();
+    // Run the code the compiler published (had the collection freed the function, ASan would
+    // report a use after free on the compiler thread or here).
+    const JitEntry entry = function->jit_entry.load(std::memory_order_acquire);
+    REQUIRE(entry != nullptr);
+    jit::Jit::adopt(*function, entry);
+    CHECK(function->jit_status == JitStatus::Compiled);
+    CHECK(run_published(*function, entry, 10) == 0);
+
+    // Published: no longer a root, so the next collection frees it.
+    heap.collect();
+    CHECK(heap.stats().live_objects < live_while_queued);
+    heap.remove_root_marker(roots);
+}
+
+TEST_CASE("jit background: a rejected function stays queued, in the VM, with no code") {
+    std::unique_ptr<Program> program = parse_and_resolve("fn g() { return g; }\n");
+    Heap heap;
+    jit::Jit jit(1, nullptr, true);
+    RegCompileResult compiled = compile_register(*program, heap);
+    REQUIRE(compiled.ok());
+    ObjFunction* function = find_function(compiled.function, "g");
+    REQUIRE(function != nullptr);
+    jit.enqueue(*function);
+    jit.wait_until_idle();
+    CHECK(jit.functions_rejected() == 1);
+    CHECK(function->jit_entry.load(std::memory_order_acquire) == nullptr);
+    CHECK(function->jit_status == JitStatus::Queued);  // the compiler never writes the status
+}
+
+TEST_CASE("jit background: shutdown drops what is still queued and joins the thread") {
+    std::unique_ptr<Program> program = parse_and_resolve(summing_functions(3));
+    Heap heap;
+    RegCompileResult compiled = compile_register(*program, heap);
+    REQUIRE(compiled.ok());
+    std::FILE* log_file = std::tmpfile();
+    {
+        jit::Jit jit(1, log_file, true);
+        jit.hold_for_testing(true);
+        for (const char* name : {"sum_0", "sum_1", "sum_2"}) {
+            ObjFunction* function = find_function(compiled.function, name);
+            REQUIRE(function != nullptr);
+            jit.enqueue(*function);
+        }
+        jit.shutdown();
+        CHECK(jit.functions_compiled() == 0);
+        jit.shutdown();  // idempotent; the destructor calls it once more
+    }
+    const std::string log = slurp(log_file);
+    CHECK(count(log, "[jit] cancelled sum_") == 3);
+    CHECK(count(log, "[jit] compiled") == 0);
+    std::fclose(log_file);
+}
+
+TEST_CASE("jit background: code is published while the collector runs and the VM's thread calls "
+          "it") {
+    // The race ThreadSanitizer is here for (the tsan-goto-nanbox preset): the compiler thread
+    // reads queued functions and publishes their code while this thread collects garbage every
+    // round (marking those same functions) and calls whatever has been published so far.
+    constexpr int kFunctions = 40;
+    std::unique_ptr<Program> program = parse_and_resolve(summing_functions(kFunctions));
+    Heap heap;
+    jit::Jit jit(1, nullptr, true);
+    Heap::RootHandle roots = heap.add_root_marker([&jit](Heap& h) { jit.mark_pending(h); });
+    RegCompileResult compiled = compile_register(*program, heap);
+    REQUIRE(compiled.ok());
+    std::vector<ObjFunction*> functions;
+    for (int k = 0; k < kFunctions; ++k) {
+        functions.push_back(find_function(compiled.function, "sum_" + std::to_string(k)));
+        REQUIRE(functions.back() != nullptr);
+    }
+    {
+        // Keeps the script, and so every function, alive through the collections below.
+        Heap::TempRoot keep(heap, make_obj(compiled.function));
+        for (ObjFunction* function : functions) jit.enqueue(*function);
+        std::vector<bool> ran(kFunctions, false);
+        int remaining = kFunctions;
+        while (remaining > 0) {
+            heap.collect();
+            for (std::size_t k = 0; k < functions.size(); ++k) {
+                if (ran[k]) continue;
+                ObjFunction& function = *functions[k];
+                const JitEntry entry = function.jit_entry.load(std::memory_order_acquire);
+                if (entry == nullptr) continue;
+                if (function.jit_status != JitStatus::Compiled) {
+                    jit::Jit::adopt(function, entry);
+                }
+                CHECK(run_published(function, entry, 100) == 4950 * static_cast<int>(k));
+                ran[k] = true;
+                --remaining;
+            }
+        }
+    }
+    CHECK(jit.functions_compiled() == kFunctions);
+    jit.shutdown();
+    heap.remove_root_marker(roots);
 }

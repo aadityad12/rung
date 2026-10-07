@@ -77,6 +77,9 @@ struct EngineOptions {
     std::uint32_t jit_threshold = 1000;
     // Where --jit-log writes each compile, rejection and bail-out; null for no log.
     std::FILE* jit_log = nullptr;
+    // --jit-background (Engine 5, notes D8): compile hot functions on a second thread while the
+    // VM keeps running them, instead of pausing to compile. Read only by --engine=jit.
+    bool jit_background = false;
 };
 
 // Creates the engine called `name` ("tree", "stack", "register", or "jit" where the JIT is
