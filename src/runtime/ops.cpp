@@ -100,6 +100,12 @@ void print_object(const Obj& obj, std::string& out) {
         case ObjKind::Closure:  // a closure is what the program sees as "a function"
             out += function_label(*static_cast<const ObjClosure&>(obj).function);
             return;
+        case ObjKind::TreeFunction:
+            out += "<fn " + static_cast<const ObjTreeFunction&>(obj).name->chars + ">";
+            return;
+        case ObjKind::Environment:
+            out += "<environment>";  // never a program-visible value
+            return;
         case ObjKind::Upvalue:
             out += "<upvalue>";  // never a program-visible value; the VM keeps them out of slots
             return;
@@ -362,6 +368,10 @@ bool array_set(Value array, Value index, Value value, std::string* error) {
 
 std::string arity_error_message(int expected, int got) {
     return "expected " + std::to_string(expected) + " arguments but got " + std::to_string(got);
+}
+
+std::string undefined_variable_message(std::string_view name) {
+    return "undefined variable '" + std::string(name) + "'";
 }
 
 }  // namespace rung

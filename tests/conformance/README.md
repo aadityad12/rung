@@ -20,6 +20,7 @@ python3 tests/run_conformance.py --rung build/debug/rung --engine tree numbers/ 
 | `--gc-stress` | passed to rung as `--gc-stress` (collect on every allocation) |
 | `--timeout SEC` | per-test limit, default 10. A test over the limit fails, so an infinite loop cannot hang CI. `--gc-stress` under a sanitizer is much slower, and the 10,000-deep recursion tests are the slowest, so raise this there. |
 | `--jobs N` | tests run in parallel, default the CPU count |
+| `--skip SUBSTRING` | do not run tests whose path contains it (repeatable). Skipped tests are listed as `SKIPPED` and counted in the last line, so nothing is skipped silently. CMake uses it only for the deep-recursion tests under `--gc-stress` in the ASan preset (see `CMakeLists.txt`). |
 | `FILTER...` | run only tests whose path (relative to this directory) contains one of these strings |
 
 Each failing test prints one `FAIL path` line, then what differed (exit code, a small diff of

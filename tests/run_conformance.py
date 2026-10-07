@@ -3,7 +3,7 @@
 
 Usage:
     run_conformance.py --rung PATH --engine NAME [--gc-stress] [--timeout SEC] [--jobs N]
-                       [FILTER...]
+                       [--skip SUBSTRING]... [FILTER...]
 
 The expected behaviour of each test lives in comments inside the test file (docs/notes.md D13):
 
@@ -88,7 +88,7 @@ def parse_expectation(path):
     return expect
 
 
-def find_tests(filters):
+def find_tests(filters, skips=()):
     tests = []
     for root, _dirs, files in os.walk(SUITE_DIR):
         for name in files:
@@ -98,7 +98,9 @@ def find_tests(filters):
     tests.sort()
     if filters:
         tests = [t for t in tests if any(f in t[0] for f in filters)]
-    return tests
+    skipped = [t for t in tests if any(s in t[0] for s in skips)]
+    tests = [t for t in tests if t not in skipped]
+    return tests, skipped
 
 
 def diff_text(expected, actual, label):
@@ -152,6 +154,9 @@ def main():
                         help="seconds allowed per test (default 10)")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1,
                         help="tests to run in parallel (default: CPU count)")
+    parser.add_argument("--skip", action="append", default=[], metavar="SUBSTRING",
+                        help="do not run tests whose path contains SUBSTRING (repeatable); "
+                             "skipped tests are counted and named in the summary, never silent")
     parser.add_argument("filters", nargs="*", metavar="FILTER",
                         help="only run tests whose path contains one of these")
     args = parser.parse_args()
@@ -160,7 +165,7 @@ def main():
         print("run_conformance: no such executable: %s" % args.rung, file=sys.stderr)
         return 2
 
-    tests = find_tests(args.filters)
+    tests, skipped = find_tests(args.filters, args.skip)
     if not tests:
         print("run_conformance: no tests matched", file=sys.stderr)
         return 1
@@ -174,7 +179,12 @@ def main():
         if failure is not None:
             failed += 1
             print("FAIL %s\n%s" % (name, failure))
-    print("%d passed, %d failed" % (len(results) - failed, failed))
+    for name, _path in skipped:
+        print("SKIPPED %s" % name)
+    summary = "%d passed, %d failed" % (len(results) - failed, failed)
+    if skipped:
+        summary += ", %d skipped" % len(skipped)
+    print(summary)
     return 1 if failed else 0
 
 
