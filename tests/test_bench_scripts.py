@@ -83,6 +83,15 @@ class StatisticsTest(unittest.TestCase):
         self.assertEqual(s["wall_median_ns"], 105)
         self.assertEqual(len(s["runs"]), 5)
 
+    def test_jit_compile_time_is_kept_only_when_reported(self):
+        self.assertNotIn("jit_compile_ns_median", bench.summarize(self.make_runs([100]), "7", 2))
+        runs = self.make_runs([100, 102, 98])
+        for run, ns in zip(runs, [300, 100, 200]):
+            run["jit_compile_ns"] = ns
+        s = bench.summarize(runs, "7", 2)
+        self.assertEqual(s["jit_compile_ns_median"], 200)
+        self.assertEqual([r["jit_compile_ns"] for r in s["runs"]], [300, 100, 200])
+
     def test_noisy_when_iqr_exceeds_five_percent_of_median(self):
         # IQR 10 on median 100 is 10%: noisy. IQR 5 is exactly 5%: not noisy (the limit is >).
         self.assertTrue(bench.summarize(self.make_runs([90, 95, 100, 105, 110]), "7", 2)["noisy"])

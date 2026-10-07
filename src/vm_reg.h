@@ -14,6 +14,10 @@
 #include "runtime/ops.h"
 #include "vm/counters.h"
 
+#if RUNG_JIT
+#include "jit/jit.h"
+#endif
+
 namespace rung {
 
 // Instructions dispatched per register opcode, and calls (notes D5).
@@ -32,6 +36,12 @@ using RegVmCounters = BasicVmCounters<kRegOpCount>;
 // nothing is copied. The callee's result is written to `base[-1]` of its own window, which is the
 // caller's register A. The JIT builds on this (notes D3): a frame's registers are always in
 // memory at `base + index`, and RegChunk::line_at maps an instruction index to its source line.
+//
+// The same class is Engine 4, --engine=jit (notes D16), when it is built with a JIT attached: the
+// VM counts calls and loop back-edges per function, has the JIT compile a function once the
+// count reaches the threshold, and runs a compiled function's machine code on every later call.
+// The machine code reads and writes the very registers this VM uses, so when it bails out the VM
+// simply carries on from the bytecode instruction it names.
 class RegisterEngine final : public Engine {
 public:
     // `inline_cache` is ladder rung 3e (notes §5): GET_GLOBAL and SET_GLOBAL remember where
@@ -40,13 +50,29 @@ public:
     // pairs fused (superinstructions.h), so the loop dispatches once for each pair.
     RegisterEngine(Heap& heap, Output& out, bool inline_cache = false,
                    bool superinstructions = false);
+#if RUNG_JIT
+    // --engine=jit: this VM with the baseline JIT attached (and the inline cache and
+    // superinstructions if `options` asks for them).
+    RegisterEngine(Heap& heap, Output& out, const EngineOptions& options);
+#endif
     ~RegisterEngine() override;
 
-    std::string_view name() const override { return "register"; }
+    std::string_view name() const override {
+#if RUNG_JIT
+        if (jit_ != nullptr) return "jit";
+#endif
+        return "register";
+    }
     EngineResult run(const Program& program) override;
     CallResult call_global(std::string_view name) override;
     std::string stats_report() const override;
     std::string pair_report() const override;
+    std::optional<std::uint64_t> jit_compile_ns() const override {
+#if RUNG_JIT
+        if (jit_ != nullptr) return jit_->total_compile_ns();
+#endif
+        return std::nullopt;
+    }
 
     const RegVmCounters& counters() const { return counters_; }
 
@@ -81,9 +107,11 @@ private:
     enum class CallOutcome { Error, PushedFrame, NativeDone };
 
     bool execute(std::size_t stop_frames);
-    // The dispatch loop. Two instantiations, so a run without the inline cache executes the same
-    // instructions it did before the rung existed, with no test of the flag anywhere in it.
-    template <bool kInlineCache>
+    // The dispatch loop, in up to four instantiations, so a run without a rung executes no test
+    // of its flag: kInlineCache caches global lookups; kJit adds the JIT's hooks (counting,
+    // entering machine code). --engine=register runs execute_loop<..., false>, which has none of
+    // the JIT's code, so it measures exactly the VM it measured before the JIT existed (notes D4).
+    template <bool kInlineCache, bool kJit>
     bool execute_loop(std::size_t stop_frames);
     Value* find_global(ObjString* name);
     void attach_global_caches(ObjFunction* function);
@@ -93,6 +121,11 @@ private:
     void fail(std::string message);
     std::optional<RuntimeError> take_error();
     void mark_roots(Heap& heap);
+#if RUNG_JIT
+    void jit_count(ObjFunction* function);
+    const Instruction* jit_frame_entry(ObjFunction* function, Value* base,
+                                       const Instruction* pc);
+#endif
 
     Heap& heap_;
     Output& out_;
@@ -121,6 +154,9 @@ private:
     Value result_ = make_nil();  // what the entry frame returned; not rooted
     std::optional<RuntimeError> error_;
     RegVmCounters counters_;
+#if RUNG_JIT
+    std::unique_ptr<jit::Jit> jit_;  // null for --engine=register
+#endif
 };
 
 }  // namespace rung

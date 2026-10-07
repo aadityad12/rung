@@ -65,7 +65,7 @@ std::string json_quote(std::string_view text) {
 }
 
 std::string bench_json(std::string_view engine_name, const BenchResult& bench,
-                       const HeapStats& heap_stats) {
+                       const HeapStats& heap_stats, std::optional<std::uint64_t> jit_compile_ns) {
     std::string out = "{\"engine\": " + json_quote(engine_name) + ", \"iterations_ns\": [";
     const char* separator = "";
     for (long long ns : bench.iterations_ns) {
@@ -77,7 +77,9 @@ std::string bench_json(std::string_view engine_name, const BenchResult& bench,
     out += ", \"heap\": {\"objects_allocated\": " + std::to_string(heap_stats.objects_allocated);
     out += ", \"bytes_allocated\": " + std::to_string(heap_stats.bytes_allocated);
     out += ", \"collections\": " + std::to_string(heap_stats.collections);
-    out += ", \"peak_live_bytes\": " + std::to_string(heap_stats.peak_live_bytes) + "}}\n";
+    out += ", \"peak_live_bytes\": " + std::to_string(heap_stats.peak_live_bytes) + "}";
+    if (jit_compile_ns) out += ", \"jit_compile_ns\": " + std::to_string(*jit_compile_ns);
+    out += "}\n";
     return out;
 }
 

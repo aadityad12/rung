@@ -78,6 +78,7 @@ add_library(rung_core STATIC
   src/engine_tree.cpp
   src/fold.cpp
   src/jit/arm64_emitter.cpp
+  src/jit/jit_compiler.cpp
   src/lexer.cpp
   src/output.cpp
   src/runtime/heap.cpp
@@ -116,6 +117,17 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
   target_sources(rung_core PRIVATE src/jit/exec_memory.cpp)
 endif()
 
+# The JIT itself (--engine=jit, notes D16) also needs NaN-boxed values: its type guards test
+# NaN-box tag bits (notes D3). Elsewhere --engine=jit is a usage error and its conformance runs
+# are reported as skipped (notes D6).
+set(RUNG_HAS_JIT OFF)
+if(RUNG_HAS_JIT_MEMORY AND RUNG_NANBOX)
+  set(RUNG_HAS_JIT ON)
+  target_sources(rung_core PRIVATE src/jit/jit.cpp)
+  # PUBLIC: vm_reg.h has a JIT member only in this configuration, so every includer must agree.
+  target_compile_definitions(rung_core PUBLIC RUNG_JIT=1)
+endif()
+
 find_package(Threads REQUIRED)  # the engine runs on its own big-stack thread (notes D12)
 add_executable(rung src/main.cpp)
 target_link_libraries(rung PRIVATE rung_core rung_warnings Threads::Threads)
@@ -130,6 +142,7 @@ add_executable(rung_unit_tests
   tests/unit/compiler_stack_test.cpp
   tests/unit/engine_tree_test.cpp
   tests/unit/fold_test.cpp
+  tests/unit/jit_compiler_test.cpp
   tests/unit/lexer_test.cpp
   tests/unit/runtime_heap_test.cpp
   tests/unit/parser_test.cpp
@@ -143,6 +156,9 @@ add_executable(rung_unit_tests
 target_include_directories(rung_unit_tests SYSTEM PRIVATE third_party/doctest)
 if(RUNG_HAS_JIT_MEMORY)
   target_sources(rung_unit_tests PRIVATE tests/unit/exec_memory_test.cpp)
+endif()
+if(RUNG_HAS_JIT)
+  target_sources(rung_unit_tests PRIVATE tests/unit/jit_test.cpp)
 endif()
 target_link_libraries(rung_unit_tests PRIVATE rung_core rung_warnings Threads::Threads)
 
@@ -269,7 +285,11 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
   # full-size benchmarks take seconds when optimised and many minutes under -O0 or a sanitizer.
   # This checks results, never timings (notes D5).
   if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT RUNG_SANITIZE)
-    foreach(engine ${RUNG_ENGINES})
+    set(RUNG_BENCH_ENGINES ${RUNG_ENGINES})
+    if(RUNG_HAS_JIT)
+      list(APPEND RUNG_BENCH_ENGINES jit)  # at its default threshold, as bench.py runs it
+    endif()
+    foreach(engine ${RUNG_BENCH_ENGINES})
       add_test(NAME bench-check-${engine}
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
                 --rung $<TARGET_FILE:rung> --engine ${engine})
@@ -283,5 +303,43 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
     add_test(NAME bench-check-register-all-rungs
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
               --rung $<TARGET_FILE:rung> --engine register --superinstructions --inline-cache)
+    if(RUNG_HAS_JIT)
+      add_test(NAME bench-check-jit-all-rungs
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
+                --rung $<TARGET_FILE:rung> --engine jit --superinstructions --inline-cache)
+    endif()
   endif()
+
+  # The JIT with a threshold of 1, so every function inside the whitelist is compiled on its
+  # first call and the whole suite runs through machine code wherever it can (notes D16). In a
+  # build without the JIT the runner checks that rung refuses --engine=jit as unavailable, lists
+  # every test as skipped, and exits 77, which ctest reports as "Skipped" (notes D6).
+  set(RUNG_JIT_ARGS --rung-arg=--jit-threshold=1)
+  if(NOT RUNG_HAS_JIT)
+    list(APPEND RUNG_JIT_ARGS --expect-unavailable)
+  endif()
+  add_test(NAME conformance-jit
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine jit ${RUNG_JIT_ARGS} --timeout 120)
+  add_test(NAME conformance-jit-gc-stress
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine jit ${RUNG_JIT_ARGS} --gc-stress --timeout 300
+            ${RUNG_GC_STRESS_SKIPS})
+  add_test(NAME conformance-jit-fold
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine jit ${RUNG_JIT_ARGS} --fold --timeout 120)
+  # The JIT is the register VM plus machine code, so it runs with the register VM's rungs too
+  # (and must still agree with every other engine). With --superinstructions it compiles fused
+  # words as their two halves (notes D16).
+  add_test(NAME conformance-jit-superinstructions
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine jit ${RUNG_JIT_ARGS} --superinstructions
+            --timeout 120)
+  add_test(NAME conformance-jit-all-rungs
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine jit ${RUNG_JIT_ARGS} --superinstructions
+            --inline-cache --fold --timeout 120)
+  set_tests_properties(conformance-jit conformance-jit-gc-stress conformance-jit-fold
+                       conformance-jit-superinstructions conformance-jit-all-rungs
+                       PROPERTIES SKIP_RETURN_CODE 77)
 endif()

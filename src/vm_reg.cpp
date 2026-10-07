@@ -33,6 +33,13 @@ RegisterEngine::RegisterEngine(Heap& heap, Output& out, bool inline_cache, bool 
     });
 }
 
+#if RUNG_JIT
+RegisterEngine::RegisterEngine(Heap& heap, Output& out, const EngineOptions& options)
+    : RegisterEngine(heap, out, options.inline_cache, options.superinstructions) {
+    jit_ = std::make_unique<jit::Jit>(options.jit_threshold, options.jit_log);
+}
+#endif
+
 RegisterEngine::~RegisterEngine() { heap_.remove_root_marker(root_handle_); }
 
 // What the collector must keep alive (notes D10). The registers: every frame's window, which
@@ -208,7 +215,11 @@ std::string RegisterEngine::stats_report() const {
     if (superinstructions_) {
         text += "superinstructions: pairs fused: " + std::to_string(fused_pairs_) + "\n";
     }
+#if RUNG_JIT
+    if (jit_ != nullptr) text += jit_->stats_report();
+#endif
 #if RUNG_VM_COUNTERS
+    // With the JIT, instructions run as machine code are not dispatched and not counted.
     text += "vm: " + std::to_string(counters_.instructions()) + " instructions dispatched, " +
             std::to_string(counters_.rung_calls) + " calls, " +
             std::to_string(counters_.native_calls) + " native calls\n";
@@ -223,11 +234,10 @@ std::string RegisterEngine::stats_report() const {
                       static_cast<unsigned long long>(counters_.by_opcode[op]));
         text += row;
     }
-    return text;
 #else
-    return text +
-           "vm: instruction counters are not compiled in (configure with -DRUNG_VM_COUNTERS=ON)\n";
+    text += "vm: instruction counters are not compiled in (configure with -DRUNG_VM_COUNTERS=ON)\n";
 #endif
+    return text;
 }
 
 std::string RegisterEngine::pair_report() const {
@@ -238,6 +248,37 @@ std::string RegisterEngine::pair_report() const {
     return "pairs: instruction counters are not compiled in (configure with -DRUNG_VM_COUNTERS=ON)\n";
 #endif
 }
+
+#if RUNG_JIT
+// ---- the JIT's hooks (notes D16) -------------------------------------------------------------
+
+// Hotness: one count per call and per loop back-edge (a backward JUMP), so a function that is
+// called rarely but loops a lot, like a benchmark's `run`, still gets hot. At the threshold the
+// function is compiled at once, on this thread. A back-edge cannot switch the running call into
+// machine code (that would be on-stack replacement, not built), so a function that becomes hot
+// inside a loop runs machine code from its next call. The top-level script is never compiled:
+// it runs once, so without on-stack replacement its machine code could never be entered.
+void RegisterEngine::jit_count(ObjFunction* function) {
+    if (function->jit_status != JitStatus::Cold || function->name == nullptr) return;
+    if (++function->jit_hotness >= jit_->threshold()) jit_->compile(*function);
+}
+
+// Called with the frame of `function` just pushed (pc at its first instruction). Counts the call
+// and, if the function has machine code, runs it. The code works on the frame's registers in
+// place and returns the index of the instruction the VM resumes at: a RETURN if it ran to the
+// end (the VM performs the return), else the instruction whose guard failed, which the VM
+// executes itself, error and all. Returns the pc to continue from.
+const Instruction* RegisterEngine::jit_frame_entry(ObjFunction* function, Value* base,
+                                                   const Instruction* pc) {
+    jit_count(function);
+    if (function->jit_entry == nullptr) return pc;
+    const std::uint32_t resume = function->jit_entry(base);
+    const Instruction* code = function->reg.code.data();
+    RegOp op = insn_op(code[resume]);
+    if (op != RegOp::Return && op != RegOp::ReturnNil) jit_->note_bailout(*function, resume);
+    return code + resume;
+}
+#endif
 
 // ---- calls -----------------------------------------------------------------------------------
 
@@ -373,7 +414,11 @@ RegisterEngine::CallOutcome RegisterEngine::call_value(Value* callee_slot, int a
 #define BODY_LT() CHECKED_OP(op_less(RK_B(), RK_C(), &result, &error))
 #define BODY_LE() CHECKED_OP(op_less_equal(RK_B(), RK_C(), &result, &error))
 // Offsets count instructions from the one after the jump, which is where pc already is.
-#define BODY_JUMP() (pc += insn_sbx(insn))
+#define BODY_JUMP()                \
+    do {                           \
+        JIT_BACK_EDGE();           \
+        pc += insn_sbx(insn);      \
+    } while (false)
 #define BODY_JUMP_IF_FALSE() (!is_truthy(REG_A()) ? (void)(pc += insn_sbx(insn)) : (void)0)
 #define BODY_INDEX_SET()                                                          \
     do {                                                                          \
@@ -398,10 +443,37 @@ static_assert(kRegOpCount == 0 RUNG_REG_OPCODE_LIST(RUNG_COUNT_OP_),
 // error_ set (the caller unwinds, see take_error). The entry frame must already be pushed.
 bool RegisterEngine::execute(std::size_t stop_frames) {
     counters_.restart_pairs();
-    return inline_cache_ ? execute_loop<true>(stop_frames) : execute_loop<false>(stop_frames);
+#if RUNG_JIT
+    if (jit_ != nullptr) {
+        return inline_cache_ ? execute_loop<true, true>(stop_frames)
+                             : execute_loop<false, true>(stop_frames);
+    }
+#endif
+    return inline_cache_ ? execute_loop<true, false>(stop_frames)
+                         : execute_loop<false, false>(stop_frames);
 }
 
-template <bool kInlineCache>
+// The JIT's two hooks in the loop (notes D16). They compile to nothing when kJit is false.
+// JIT_FRAME_ENTRY runs after a frame is pushed: it counts the call and, if the function has
+// machine code, runs it and moves pc to where the code stopped. JIT_BACK_EDGE counts a
+// backward jump.
+#if RUNG_JIT
+#define JIT_FRAME_ENTRY()                                                       \
+    do {                                                                        \
+        if constexpr (kJit) pc = jit_frame_entry(closure->function, base, pc);  \
+    } while (false)
+#define JIT_BACK_EDGE()                                                         \
+    do {                                                                        \
+        if constexpr (kJit) {                                                   \
+            if (insn_sbx(insn) < 0) jit_count(closure->function);               \
+        }                                                                       \
+    } while (false)
+#else
+#define JIT_FRAME_ENTRY() ((void)0)
+#define JIT_BACK_EDGE() ((void)0)
+#endif
+
+template <bool kInlineCache, bool kJit>
 bool RegisterEngine::execute_loop(std::size_t stop_frames) {
     CallFrame* frame;
     ObjClosure* closure;
@@ -414,6 +486,9 @@ bool RegisterEngine::execute_loop(std::size_t stop_frames) {
     [[maybe_unused]] const Instruction* code_begin = nullptr;
     [[maybe_unused]] Value** global_cache = nullptr;
     LOAD_FRAME();
+    // call_global's entry frame is a call like any other (run()'s script frame is never
+    // compiled; see jit_count).
+    JIT_FRAME_ENTRY();
 
     RUNG_DISPATCH()
 
@@ -557,7 +632,10 @@ bool RegisterEngine::execute_loop(std::size_t stop_frames) {
         SAVE_STATE();
         CallOutcome outcome = call_value(&REG_A(), static_cast<int>(insn_b(insn)));
         if (outcome == CallOutcome::Error) return false;
-        if (outcome == CallOutcome::PushedFrame) LOAD_FRAME();
+        if (outcome == CallOutcome::PushedFrame) {
+            LOAD_FRAME();
+            JIT_FRAME_ENTRY();
+        }
         RUNG_NEXT();
     }
     RUNG_CASE(Closure) {
@@ -723,5 +801,7 @@ bool RegisterEngine::execute_loop(std::size_t stop_frames) {
 #undef BODY_JUMP
 #undef BODY_JUMP_IF_FALSE
 #undef BODY_INDEX_SET
+#undef JIT_FRAME_ENTRY
+#undef JIT_BACK_EDGE
 
 }  // namespace rung

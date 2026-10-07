@@ -1,5 +1,6 @@
 #include <doctest.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -83,6 +84,19 @@ TEST_CASE("bench: json has the engine, times, result and heap statistics") {
           "{\"engine\": \"tree\", \"iterations_ns\": [120, 95], \"result\": \"42\", "
           "\"heap\": {\"objects_allocated\": 7, \"bytes_allocated\": 512, \"collections\": 1, "
           "\"peak_live_bytes\": 300}}\n");
+}
+
+TEST_CASE("bench: json carries the JIT's compile time when the engine has a JIT") {
+    BenchResult bench;
+    bench.iterations_ns = {5};
+    bench.result = "1";
+    HeapStats stats;
+    CHECK(bench_json("jit", bench, stats, std::uint64_t{12345}) ==
+          "{\"engine\": \"jit\", \"iterations_ns\": [5], \"result\": \"1\", "
+          "\"heap\": {\"objects_allocated\": 0, \"bytes_allocated\": 0, \"collections\": 0, "
+          "\"peak_live_bytes\": 0}, \"jit_compile_ns\": 12345}\n");
+    // No JIT, no key: the other engines' files are unchanged.
+    CHECK(bench_json("tree", bench, stats).find("jit_compile_ns") == std::string::npos);
 }
 
 TEST_CASE("bench: json strings are escaped") {

@@ -91,7 +91,7 @@ def summarize(runs, expected_result, iterations):
     med = median(totals)
     spread = iqr(totals)
     iqr_pct = (100.0 * spread / med) if med else 0.0
-    return {
+    summary = {
         "result": expected_result,
         "median_total_ns": med,
         "iqr_total_ns": spread,
@@ -107,6 +107,15 @@ def summarize(runs, expected_result, iterations):
         "runs": [{"total_ns": t, "wall_ns": r["wall_ns"], "peak_rss_bytes": r["peak_rss_bytes"],
                   "iterations_ns": r["iterations_ns"]} for t, r in zip(totals, runs)],
     }
+    # Only the JIT engine reports a compile time (notes D16): the total over one process, so the
+    # row can show what the JIT cost next to what it saved (spec §5.6, issue #24).
+    compile_ns = [run.get("jit_compile_ns") for run in runs]
+    if any(ns is not None for ns in compile_ns):
+        kept = [ns for ns in compile_ns if ns is not None]
+        summary["jit_compile_ns_median"] = median(kept)
+        for entry, ns in zip(summary["runs"], compile_ns):
+            entry["jit_compile_ns"] = ns
+    return summary
 
 
 # ----------------------------------------------------------------------------- environment
@@ -226,7 +235,8 @@ def run_process(root, preset, args, benchmark, iterations):
         with open(out_path, encoding="utf-8") as f:
             data = json.load(f)
     return {"iterations_ns": data["iterations_ns"], "result": data["result"], "wall_ns": wall_ns,
-            "peak_rss_bytes": peak_rss_bytes(ru), "heap": data.get("heap")}
+            "peak_rss_bytes": peak_rss_bytes(ru), "heap": data.get("heap"),
+            "jit_compile_ns": data.get("jit_compile_ns")}
 
 
 def measure(root, configs, benchmarks, expected, runs, iterations, seed, log=print):

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 #include "bytecode/chunk.h"
@@ -7,6 +8,19 @@
 #include "runtime/object.h"
 
 namespace rung {
+
+// Machine code the baseline JIT produced for one function (notes D16). It takes the frame's
+// register 0 (`base`) and returns the index of the bytecode instruction the register VM resumes
+// at: a RETURN / RETURN_NIL when the code ran to the end, or the instruction whose type guard or
+// zero-divisor check failed.
+using JitEntry = std::uint32_t (*)(Value* base);
+
+// Where a function stands with the JIT. Only --engine=jit changes it.
+enum class JitStatus : std::uint8_t {
+    Cold,      // still counting calls and loop back-edges
+    Compiled,  // jit_entry is set; every later call runs machine code
+    Rejected,  // outside the whitelist (or the code could not be emitted); stays in the VM
+};
 
 // Stack-VM function objects. They are in their own header, not object.h, because ObjFunction
 // contains a Chunk and chunk.h needs Value, which object.h is included from (value.h).
@@ -29,6 +43,12 @@ struct ObjFunction : Obj {
     // own thread reads or writes it, so the bytecode itself stays immutable and safe to read
     // from the background compiler thread (notes D8).
     std::vector<Value*> global_cache;
+    // Baseline JIT state (notes D16). Kept on the function so the check on every call is a load
+    // and a compare, not a table lookup. The machine code itself is owned by the JIT, which
+    // outlives every function it compiled.
+    std::uint32_t jit_hotness = 0;  // calls plus loop back-edges counted so far
+    JitStatus jit_status = JitStatus::Cold;
+    JitEntry jit_entry = nullptr;
 
     explicit ObjFunction(ObjString* n) : Obj(ObjKind::Function), name(n) {}
 };
