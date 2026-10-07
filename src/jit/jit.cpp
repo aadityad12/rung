@@ -175,7 +175,9 @@ void Jit::adopt(ObjFunction& function, JitEntry entry) {
 }
 
 void Jit::worker_main() {
+#ifdef __APPLE__
     unsigned qos = current_qos();
+#endif
     std::unique_lock<std::mutex> lock(mutex_);
     for (;;) {
         work_ready_.wait(lock, [this] { return stopping_ || (!held_ && !queue_.empty()); });
