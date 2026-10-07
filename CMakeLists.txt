@@ -212,6 +212,20 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
             --rung $<TARGET_FILE:rung> --engine register --fold --gc-stress --timeout 300
             ${RUNG_GC_STRESS_SKIPS})
 
+  # The register VM's inline cache (ladder rung 3e) must not change what any program does, so the
+  # whole suite runs once more with it on, and once more with the collector forced on every
+  # allocation (the cache holds pointers into the globals table, which the collector scans).
+  add_test(NAME conformance-register-inline-cache
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine register --inline-cache --timeout 120)
+  add_test(NAME conformance-register-fold-inline-cache
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine register --fold --inline-cache --timeout 120)
+  add_test(NAME conformance-register-inline-cache-gc-stress
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine register --inline-cache --gc-stress
+            --timeout 300 ${RUNG_GC_STRESS_SKIPS})
+
   add_test(NAME bench-cli
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_cli_check.py
             --rung $<TARGET_FILE:rung>)
@@ -230,5 +244,8 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
                 --rung $<TARGET_FILE:rung> --engine ${engine})
     endforeach()
+    add_test(NAME bench-check-register-inline-cache
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
+              --rung $<TARGET_FILE:rung> --engine register --inline-cache)
   endif()
 endif()
