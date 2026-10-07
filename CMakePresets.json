@@ -46,6 +46,18 @@
       "cacheVariables": { "RUNG_COMPUTED_GOTO": "ON" }
     },
     {
+      "name": "release-goto-nanbox",
+      "displayName": "Release with computed goto and NaN-boxed values (ladder rung 3b)",
+      "inherits": "release-goto",
+      "cacheVariables": { "RUNG_NANBOX": "ON" }
+    },
+    {
+      "name": "asan-goto-nanbox",
+      "displayName": "ASan + UBSan with computed goto and NaN-boxed values",
+      "inherits": "asan-goto",
+      "cacheVariables": { "RUNG_NANBOX": "ON" }
+    },
+    {
       "name": "fuzz",
       "displayName": "libFuzzer front-end target (needs clang with libFuzzer, not Apple clang)",
       "inherits": "base",
@@ -71,6 +83,8 @@
     { "name": "asan", "configurePreset": "asan" },
     { "name": "release-goto", "configurePreset": "release-goto" },
     { "name": "asan-goto", "configurePreset": "asan-goto" },
+    { "name": "release-goto-nanbox", "configurePreset": "release-goto-nanbox" },
+    { "name": "asan-goto-nanbox", "configurePreset": "asan-goto-nanbox" },
     { "name": "tsan", "configurePreset": "tsan" },
     { "name": "fuzz", "configurePreset": "fuzz" }
   ],
@@ -93,6 +107,17 @@
       "name": "asan-goto",
       "inherits": "base",
       "configurePreset": "asan-goto",
+      "environment": { "UBSAN_OPTIONS": "print_stacktrace=1" }
+    },
+    {
+      "name": "release-goto-nanbox",
+      "inherits": "base",
+      "configurePreset": "release-goto-nanbox"
+    },
+    {
+      "name": "asan-goto-nanbox",
+      "inherits": "base",
+      "configurePreset": "asan-goto-nanbox",
       "environment": { "UBSAN_OPTIONS": "print_stacktrace=1" }
     },
     { "name": "tsan", "inherits": "base", "configurePreset": "tsan" },
