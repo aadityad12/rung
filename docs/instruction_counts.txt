@@ -1,0 +1,344 @@
+Instructions dispatched per benchmark by the stack and register VMs (counts, not times).
+Produced by `python3 scripts/instruction_counts.py` with a build that has the VM counters.
+Each run is `rung --engine=E [FLAGS] --stats --bench=1 bench/NAME.rg`: the program's top
+level, then one call of run(). The counts do not depend on the dispatch style or the
+value representation, so the stack VM's are those of ladder rows 02 to 04, the register
+VM's those of row 05, `+ super` those of row 06 (and of row 07: the inline cache changes
+how a global is found, not how many instructions run), and `+ all` those of row 08.
+Row 09 runs the same bytecode, but the instructions of compiled functions run as
+machine code and are not counted (notes section 5, Engine 4).
+
+| Benchmark | Stack VM | Register VM | Register / stack | + super | + all | Calls |
+|---|---|---|---|---|---|---|
+| closures | 17,100,029 | 9,600,020 | 0.56 | 8,400,018 | 8,400,018 | 900,002 |
+| fib | 7,627,457 | 4,131,542 | 0.54 | 3,495,921 | 3,495,921 | 635,622 |
+| loop_sum | 40,000,013 | 14,000,008 | 0.35 | 8,000,007 | 8,000,007 | 1 |
+| nbody | 22,578,652 | 8,491,383 | 0.38 | 6,395,976 | 6,395,972 | 55,013 |
+| sieve | 29,901,158 | 9,902,205 | 0.33 | 6,201,614 | 6,201,614 | 1 |
+| strcat | 5,674,024 | 1,910,017 | 0.34 | 1,212,015 | 1,212,015 | 1 |
+
+== closures
+-- stack VM
+vm: 17100029 instructions dispatched, 900002 calls, 0 native calls
+  CONST          2400006
+  NIL            1
+  POP            2400002
+  GET_LOCAL      3300004
+  SET_LOCAL      1200000
+  GET_GLOBAL     300001
+  DEFINE_GLOBAL  3
+  GET_UPVALUE    900000
+  SET_UPVALUE    300000
+  ADD            1800000
+  MOD            600000
+  LT             600002
+  JUMP_IF_FALSE  600002
+  LOOP           600000
+  CALL           900001
+  CLOSURE        300004
+  RETURN         900003
+-- register VM
+vm: 9600020 instructions dispatched, 900002 calls, 0 native calls
+  MOVE           1500000
+  LOADK          300004
+  GET_GLOBAL     300001
+  DEFINE_GLOBAL  3
+  GET_UPVALUE    900000
+  SET_UPVALUE    300000
+  ADD            1800000
+  MOD            600000
+  LT             600002
+  JUMP           600000
+  JUMP_IF_FALSE  600002
+  CALL           900001
+  CLOSURE        300004
+  RETURN         900002
+  RETURN_NIL     1
+-- register VM + superinstructions
+vm: 8400018 instructions dispatched, 900002 calls, 0 native calls
+  MOVE           1500000
+  LOADK          300004
+  GET_GLOBAL     300001
+  DEFINE_GLOBAL  3
+  GET_UPVALUE    900000
+  SET_UPVALUE    300000
+  ADD            1200000
+  JUMP           600000
+  CALL           900001
+  CLOSURE        300004
+  RETURN         900002
+  RETURN_NIL     1
+  LT_JUMP_IF_FALSE 600002
+  MOD_ADD        600000
+-- register VM + superinstructions + inline cache + folding
+vm: 8400018 instructions dispatched, 900002 calls, 0 native calls
+
+== fib
+-- stack VM
+vm: 7627457 instructions dispatched, 635622 calls, 0 native calls
+  CONST          1271242
+  NIL            1
+  POP            635621
+  GET_LOCAL      1589052
+  GET_GLOBAL     635621
+  DEFINE_GLOBAL  2
+  ADD            317810
+  SUB            635620
+  LT             635621
+  JUMP_IF_FALSE  635621
+  CALL           635621
+  CLOSURE        2
+  RETURN         635623
+-- register VM
+vm: 4131542 instructions dispatched, 635622 calls, 0 native calls
+  LOADK          1
+  GET_GLOBAL     635621
+  DEFINE_GLOBAL  2
+  ADD            317810
+  SUB            635620
+  LT             635621
+  JUMP_IF_FALSE  635621
+  CALL           635621
+  CLOSURE        2
+  RETURN         635622
+  RETURN_NIL     1
+-- register VM + superinstructions
+vm: 3495921 instructions dispatched, 635622 calls, 0 native calls
+  LOADK          1
+  GET_GLOBAL     635621
+  DEFINE_GLOBAL  2
+  ADD            317810
+  SUB            635620
+  CALL           635621
+  CLOSURE        2
+  RETURN         635622
+  RETURN_NIL     1
+  LT_JUMP_IF_FALSE 635621
+-- register VM + superinstructions + inline cache + folding
+vm: 3495921 instructions dispatched, 635622 calls, 0 native calls
+
+== loop_sum
+-- stack VM
+vm: 40000013 instructions dispatched, 1 calls, 0 native calls
+  CONST          8000003
+  NIL            1
+  POP            6000001
+  GET_LOCAL      8000002
+  SET_LOCAL      4000000
+  DEFINE_GLOBAL  1
+  ADD            4000000
+  MOD            4000000
+  LT             2000001
+  JUMP_IF_FALSE  2000001
+  LOOP           2000000
+  CLOSURE        1
+  RETURN         2
+-- register VM
+vm: 14000008 instructions dispatched, 1 calls, 0 native calls
+  LOADK          2
+  DEFINE_GLOBAL  1
+  ADD            4000000
+  MOD            4000000
+  LT             2000001
+  JUMP           2000000
+  JUMP_IF_FALSE  2000001
+  CLOSURE        1
+  RETURN         1
+  RETURN_NIL     1
+-- register VM + superinstructions
+vm: 8000007 instructions dispatched, 1 calls, 0 native calls
+  LOADK          2
+  DEFINE_GLOBAL  1
+  JUMP           2000000
+  CLOSURE        1
+  RETURN         1
+  RETURN_NIL     1
+  LT_JUMP_IF_FALSE 2000001
+  MOD_ADD        4000000
+-- register VM + superinstructions + inline cache + folding
+vm: 8000007 instructions dispatched, 1 calls, 0 native calls
+
+== nbody
+-- stack VM
+vm: 22578652 instructions dispatched, 55013 calls, 5001 native calls
+  CONST          3575581
+  NIL            5001
+  POP            2955492
+  GET_LOCAL      6415955
+  SET_LOCAL      1360280
+  GET_GLOBAL     60013
+  DEFINE_GLOBAL  5
+  ADD            1655295
+  SUB            300040
+  MUL            875083
+  DIV            1300260
+  NEG            10
+  LT             790152
+  GT             50010
+  JUMP           50010
+  JUMP_IF_FALSE  840162
+  LOOP           705135
+  CALL           60013
+  CLOSURE        5
+  RETURN         55014
+  ARRAY          6
+  INDEX_GET      1150130
+  INDEX_SET      375000
+-- register VM
+vm: 8491383 instructions dispatched, 55013 calls, 5001 native calls
+  MOVE           210023
+  LOADK          65027
+  GET_GLOBAL     60013
+  DEFINE_GLOBAL  5
+  ADD            1655295
+  SUB            300040
+  MUL            875083
+  DIV            1300260
+  LT             790152
+  GT             50010
+  NEG            10
+  JUMP           705135
+  JUMP_IF_FALSE  840162
+  CALL           60013
+  CLOSURE        5
+  RETURN         50013
+  RETURN_NIL     5001
+  ARRAY          6
+  INDEX_GET      1150130
+  INDEX_SET      375000
+-- register VM + superinstructions
+vm: 6395976 instructions dispatched, 55013 calls, 5001 native calls
+  MOVE           210023
+  LOADK          65027
+  GET_GLOBAL     60013
+  DEFINE_GLOBAL  5
+  ADD            350040
+  SUB            300040
+  MUL            875083
+  DIV            100020
+  GT             50010
+  NEG            10
+  JUMP           675120
+  JUMP_IF_FALSE  50010
+  CALL           60013
+  CLOSURE        5
+  RETURN         50013
+  RETURN_NIL     5001
+  ARRAY          6
+  INDEX_GET      1150130
+  INDEX_SET      300000
+  LT_JUMP_IF_FALSE 790152
+  ADD_JUMP       30015
+  DIV_ADD        1200240
+  INDEX_SET_ADD  75000
+-- register VM + superinstructions + inline cache + folding
+vm: 6395972 instructions dispatched, 55013 calls, 5001 native calls
+
+== sieve
+-- stack VM
+vm: 29901158 instructions dispatched, 1 calls, 1 native calls
+  CONST          649879
+  NIL            1
+  TRUE           1
+  FALSE          1249454
+  POP            5600054
+  GET_LOCAL      10551010
+  SET_LOCAL      1899324
+  GET_GLOBAL     1
+  DEFINE_GLOBAL  1
+  ADD            1899325
+  MUL            911
+  LE             1850365
+  JUMP           49235
+  JUMP_IF_FALSE  2451139
+  LOOP           1850226
+  CALL           1
+  CLOSURE        1
+  RETURN         2
+  INDEX_GET      600774
+  INDEX_SET      1249454
+-- register VM
+vm: 9902205 instructions dispatched, 1 calls, 1 native calls
+  LOADK          4
+  LOADTRUE       1
+  GET_GLOBAL     1
+  DEFINE_GLOBAL  1
+  ADD            1899325
+  MUL            911
+  LE             1850365
+  JUMP           1850226
+  JUMP_IF_FALSE  2451139
+  CALL           1
+  CLOSURE        1
+  RETURN         1
+  RETURN_NIL     1
+  INDEX_GET      600774
+  INDEX_SET      1249454
+-- register VM + superinstructions
+vm: 6201614 instructions dispatched, 1 calls, 1 native calls
+  LOADK          4
+  LOADTRUE       1
+  GET_GLOBAL     1
+  DEFINE_GLOBAL  1
+  ADD            49099
+  MUL            911
+  JUMP           1249452
+  JUMP_IF_FALSE  600774
+  CALL           1
+  CLOSURE        1
+  RETURN         1
+  RETURN_NIL     1
+  INDEX_GET      600774
+  INDEX_SET      2
+  LE_JUMP_IF_FALSE 1850365
+  ADD_JUMP       600774
+  INDEX_SET_ADD  1249452
+-- register VM + superinstructions + inline cache + folding
+vm: 6201614 instructions dispatched, 1 calls, 1 native calls
+
+== strcat
+-- stack VM
+vm: 5674024 instructions dispatched, 1 calls, 30001 native calls
+  CONST          1062006
+  NIL            1
+  POP            1092002
+  GET_LOCAL      1062004
+  SET_LOCAL      668000
+  GET_GLOBAL     30001
+  DEFINE_GLOBAL  1
+  ADD            668001
+  LT             364002
+  JUMP_IF_FALSE  364002
+  LOOP           334000
+  CALL           30001
+  CLOSURE        1
+  RETURN         2
+-- register VM
+vm: 1910017 instructions dispatched, 1 calls, 30001 native calls
+  MOVE           60002
+  LOADK          60004
+  GET_GLOBAL     30001
+  DEFINE_GLOBAL  1
+  ADD            668001
+  LT             364002
+  JUMP           334000
+  JUMP_IF_FALSE  364002
+  CALL           30001
+  CLOSURE        1
+  RETURN         1
+  RETURN_NIL     1
+-- register VM + superinstructions
+vm: 1212015 instructions dispatched, 1 calls, 30001 native calls
+  MOVE           60002
+  LOADK          60004
+  GET_GLOBAL     30001
+  DEFINE_GLOBAL  1
+  ADD            334001
+  CALL           30001
+  CLOSURE        1
+  RETURN         1
+  RETURN_NIL     1
+  LT_JUMP_IF_FALSE 364002
+  ADD_JUMP       334000
+-- register VM + superinstructions + inline cache + folding
+vm: 1212015 instructions dispatched, 1 calls, 30001 native calls
