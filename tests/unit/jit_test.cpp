@@ -85,7 +85,7 @@ std::string slurp(std::FILE* file) {
 }
 
 EngineRun run_jit(const std::string& source, std::uint32_t threshold,
-                  bool inline_cache = false) {
+                  bool inline_cache = false, bool superinstructions = false) {
     ParseResult parsed = parse(source);
     REQUIRE(parsed.ok());
     REQUIRE_FALSE(resolve(*parsed.program).has_value());
@@ -99,6 +99,7 @@ EngineRun run_jit(const std::string& source, std::uint32_t threshold,
         options.jit_threshold = threshold;
         options.jit_log = log_file;
         options.inline_cache = inline_cache;
+        options.superinstructions = superinstructions;
         std::unique_ptr<Engine> engine = make_engine("jit", heap, out, options);
         REQUIRE(engine != nullptr);
         CHECK(engine->name() == "jit");
@@ -287,6 +288,36 @@ TEST_CASE("jit engine: runs with the register VM's inline cache") {
 #if RUNG_VM_COUNTERS
     CHECK(r.stats.find("inline cache:") != std::string::npos);
 #endif
+}
+
+TEST_CASE("jit engine: with superinstructions, either half of a fused pair can bail out") {
+    // Instructions 4 and 5 are one fused MOD + ADD word pair; 2 and 3 are LT + JUMP_IF_FALSE.
+    const std::string source = R"(fn f(a, d, n) {
+  let s = 0;
+  let i = 0;
+  while (i < n) {
+    s = i % d + a;
+    i = i + 1;
+  }
+  return s;
+}
+print f(2, 5, 6);
+print f(0.5, 5, 6);
+print f(2, 4, 6.5);
+print f(2, 0, 6);
+)";
+    EngineRun r = run_jit(source, 1, false, true);
+    CHECK(r.output == "2\n0.5\n4\n");
+    REQUIRE(r.result.runtime_error.has_value());
+    CHECK(r.result.runtime_error->line == 5);
+    CHECK(r.result.runtime_error->message == "division by zero");
+    CHECK(count(r.log, "[jit] compiled f") == 1);
+    // The float `a`: the second half (a plain ADD word) fails; the VM resumes there.
+    CHECK(count(r.log, "bail-out in f at instruction 5 (ADD, line 5)") == 1);
+    // The float `n`: the first half of the fused compare-and-branch fails.
+    CHECK(count(r.log, "bail-out in f at instruction 2 (LT_JUMP_IF_FALSE, line 4)") == 1);
+    // The zero divisor: the first half of MOD + ADD.
+    CHECK(count(r.log, "bail-out in f at instruction 4 (MOD_ADD, line 5)") == 1);
 }
 
 TEST_CASE("jit engine: a function is compiled when its calls reach the threshold") {

@@ -411,9 +411,28 @@ owner's issue; everything under *Details chosen while implementing* is the imple
 and is open to review. Code: `src/jit/jit_compiler.{h,cpp}` (whitelist and code generation),
 `src/jit/jit.{h,cpp}` (executable memory, log, statistics), the hooks in `src/vm_reg.cpp`.
 
-- **Other rungs.** `--engine=jit` accepts `--fold` (a front-end pass) and `--inline-cache` (the
-  register VM's global cache, which the JIT never touches: functions that use globals are not
-  compiled). The suite also runs as `conformance-jit-fold` and `conformance-jit-inline-cache`.
+- **Other rungs.** `--engine=jit` is the register VM plus machine code, so it accepts the
+  register VM's rungs (the ladder is cumulative, D4): `--fold` (a front-end pass, nothing to do
+  with the JIT), `--inline-cache` (the VM's global cache, which machine code never touches:
+  functions that use globals are not compiled) and `--superinstructions`. The suite runs as
+  `conformance-jit-fold`, `conformance-jit-superinstructions` and `conformance-jit-all-rungs`
+  (all three flags), and `bench-check-jit-all-rungs` checks the benchmarks that way.
+- **Superinstructions are compiled as their two halves.** A fused word (rung 3d, §5) is the first
+  instruction of a pair with only its opcode byte changed, and the next word is the second
+  instruction, unchanged (`register_code.h`, "Fusion"). Fusion saves a dispatch, and machine
+  code has no dispatch to save, so the JIT reads every word as the instruction it was before
+  fusion (`unfused_op`: `fused_first` for a fused word, the opcode itself otherwise) and
+  generates exactly the code it would for the unfused function; a unit test checks the words are
+  identical. The whitelist judges the halves the same way, so fusion never changes which
+  functions compile, and a rejection names the half that is outside it. Because no word moves,
+  bail-out indices keep their meaning: a failed check in a first half returns the fused word's
+  index and the VM re-runs the whole pair (the first half had written nothing); a failed check in
+  a second half returns that word's index and the VM runs it as the plain instruction it still
+  is, which is what the VM already does when a jump lands on a second half. The other option,
+  rejecting every function that contains a fused word, was not taken: with
+  `--superinstructions` on (it is on in row 09) `loop_sum` itself is fused, so the JIT row would
+  compile nothing. The VM's back-edge count is in the shared `JUMP` body, so the `JUMP` half of a
+  fused `ADD` + `JUMP` counts too.
 - **Where it exists.** Only in builds with an arm64 CPU *and* `RUNG_NANBOX` (CMake defines
   `RUNG_JIT`): the code is ARM64 and its type guards test NaN-box tags (D3, D15). Presets
   `release-goto-nanbox` (the one measured) and `asan-goto-nanbox`. Elsewhere `--engine=jit` is the
@@ -1286,11 +1305,11 @@ How D5's noise control became code, and the choices D5 left open:
   the guards are what is left. `fib` is not compiled (D7) and should be unchanged except for
   the counting on each call. Nothing is measured yet.
 - **Measured.** Not yet. Row `09_jit` (`release-goto-nanbox`,
-  `--engine=jit --inline-cache --fold`) is in `scripts/ladder_configs.json`, but measuring it
-  needs an exclusive machine (D5), so there is no `results/09_jit.json` yet; the measurement and
-  the per-function compile times are issue #24. The row's arguments are cumulative (D4): the JIT
-  is the register VM plus machine code, so it accepts the register VM's `--inline-cache`, and the
-  row gains the superinstruction flag (rung 3d) when that lands, before it is measured. At the default
+  `--engine=jit --superinstructions --inline-cache --fold`) is in `scripts/ladder_configs.json`,
+  but measuring it needs an exclusive machine (D5), so there is no `results/09_jit.json` yet; the
+  measurement and the per-function compile times are issue #24. The arguments are rows 6 to 8's
+  rungs plus the JIT (D4 is cumulative); the JIT is the register VM plus machine code, so it
+  accepts all three. At the default
   threshold, `bench/loop_sum.rg`'s `run` becomes hot through its loop's back-edges during the
   first call and runs as machine code from the second.
 
