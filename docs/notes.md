@@ -622,7 +622,19 @@ Rules behind the table, which every engine relies on:
 | 1 | Value representation before NaN-boxing | Tagged struct (spec recommendation). Behind the value interface in D4. `DECIDED` |
 | 2 | Integer overflow | 32-bit wraparound (D1). `DECIDED` |
 | 3 | String interning | Intern all strings (spec recommendation). `DECIDED` |
-| 4 | Benchmark sizes | Tree-walker takes roughly 2-10 s per benchmark; sized when the benchmarks are written, respecting 32-bit ints. Open |
+| 4 | Benchmark sizes | Each benchmark is sized so that `--engine=tree --bench=20` takes roughly 2-10 s (release preset, development Mac). Constants are in the table below; the timings only guided sizing and are not results. `DECIDED` |
+
+Benchmark sizes (`bench/*.rg`, issue #7). Each `run()` returns a checksum, kept in
+`bench/expected.json`. No value wraps in any of them (D1): sums are reduced with `%`.
+
+| Benchmark | Size | Why this size |
+|---|---|---|
+| `fib` | `fib(27)` | about 635,000 calls per iteration; `fib(24)` was too fast to time |
+| `loop_sum` | 2,000,000 loop steps, sum reduced `% 1000003` | `i % 7` and the reduction keep the sum far inside 32 bits; 3,000,000 steps ran past the 10 s ceiling |
+| `sieve` | primes up to 600,000 | 200,000 was below the 2 s floor; the array is one allocation of 600,001 slots |
+| `nbody` | 5 bodies, 5,000 steps of `dt = 0.01` | 500 steps was far too fast; `sqrt` is 12 Newton iterations (Rung has no `sqrt`) |
+| `strcat` | 30,000 strings of 20 bytes, then one string grown to 12,000 bytes | most `+` results are garbage immediately, which is the GC pressure; the long string is quadratic in total bytes copied |
+| `closures` | 300,000 closures created and called, then 300,000 calls through one shared counter | exercises allocation of closures and upvalues, then upvalue reads and writes |
 | 5 | Name | Rung, `.rg` files. Binary is `rung`, never `rg` (that's ripgrep). `DECIDED` |
 
 ---

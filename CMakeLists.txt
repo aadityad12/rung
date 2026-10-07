@@ -67,6 +67,7 @@ endif()
 add_library(rung_core STATIC
   src/ast.cpp
   src/ast_dump.cpp
+  src/bench.cpp
   src/bytecode/chunk.cpp
   src/bytecode/register_code.cpp
   src/compiler_reg.cpp
@@ -122,6 +123,7 @@ enable_testing()
 add_executable(rung_unit_tests
   tests/unit/test_main.cpp
   tests/unit/arm64_emitter_test.cpp
+  tests/unit/bench_test.cpp
   tests/unit/compiler_reg_test.cpp
   tests/unit/compiler_stack_test.cpp
   tests/unit/engine_tree_test.cpp
@@ -186,7 +188,10 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
       --skip functions/ten_thousand_and_one_nested_calls_overflow.rg)
   endif()
 
-  foreach(engine tree stack register)
+  # Engines that exist on this platform; later engine issues add theirs here.
+  set(RUNG_ENGINES tree stack register)
+
+  foreach(engine ${RUNG_ENGINES})
     add_test(NAME conformance-${engine}
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
               --rung $<TARGET_FILE:rung> --engine ${engine} --timeout 120)
@@ -195,4 +200,19 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
               --rung $<TARGET_FILE:rung> --engine ${engine} --gc-stress --timeout 300
               ${RUNG_GC_STRESS_SKIPS})
   endforeach()
+
+  add_test(NAME bench-cli
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_cli_check.py
+            --rung $<TARGET_FILE:rung>)
+
+  # Benchmark checksums (issue #7): every benchmark once on every engine. Release only: the
+  # full-size benchmarks take seconds when optimised and many minutes under -O0 or a sanitizer.
+  # This checks results, never timings (notes D5).
+  if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT RUNG_SANITIZE)
+    foreach(engine ${RUNG_ENGINES})
+      add_test(NAME bench-check-${engine}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
+                --rung $<TARGET_FILE:rung> --engine ${engine})
+    endforeach()
+  endif()
 endif()

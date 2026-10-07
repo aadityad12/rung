@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "ast_dump.h"
+#include "bench.h"
 #include "compiler_reg.h"
 #include "compiler_stack.h"
 #include "disassembler.h"
@@ -42,6 +43,8 @@ struct Options {
     bool want_bytecode = false;
     bool gc_stress = false;
     bool want_stats = false;
+    std::optional<std::size_t> bench_iterations;
+    std::string bench_out;
     std::string engine = "tree";
     const char* path = nullptr;
 };
@@ -54,7 +57,8 @@ void print_usage() {
         separator = "|";
     }
     std::cerr << "] [--gc-stress] [--stats]\n"
-                 "            [--dump-tokens | --dump-ast | --dump-bytecode] <file.rg>\n"
+                 "            [--dump-tokens | --dump-ast | --dump-bytecode]\n"
+                 "            [--bench=N --bench-out=FILE] <file.rg>\n"
                  "       --dump-bytecode also accepts --engine=stack|register\n";
 }
 
@@ -79,6 +83,24 @@ void print_stats(const rung::Heap& heap) {
     std::cerr << "heap: " << stats.objects_allocated << " objects allocated, "
               << stats.bytes_allocated << " bytes allocated, " << stats.collections
               << " collections, " << stats.peak_live_bytes << " peak heap bytes\n";
+}
+
+// Bench mode (notes D12): the top level has already run; call `run` N times and write the JSON.
+int run_bench_mode(const Options& options, rung::Engine& engine, const rung::Heap& heap) {
+    rung::set_benchmark_thread_qos();  // notes D5
+    rung::BenchResult bench = rung::run_bench(engine, *options.bench_iterations);
+    if (!bench.ok()) {
+        std::cerr << rung::format_runtime_error(*bench.runtime_error) << "\n";
+        return kExitRuntimeError;
+    }
+    std::ofstream file(options.bench_out, std::ios::binary);
+    file << rung::bench_json(engine.name(), bench, heap.stats());
+    file.flush();
+    if (!file) {
+        std::cerr << "rung: cannot write '" << options.bench_out << "'\n";
+        return kExitNoInput;
+    }
+    return kExitOk;
 }
 
 // Everything after the command line has been understood. Returns the process exit code.
@@ -153,11 +175,25 @@ int execute(const Options& options) {
         std::cerr << rung::format_runtime_error(*result.runtime_error) << "\n";
         exit_code = kExitRuntimeError;
     }
+    if (exit_code == kExitOk && options.bench_iterations) {
+        exit_code = run_bench_mode(options, *engine, heap);
+    }
     if (options.want_stats) {
         print_stats(heap);
         std::cerr << engine->stats_report();
     }
     return exit_code;
+}
+
+// Decimal digits only; nullopt for anything else (or a value too large to be sensible).
+std::optional<std::size_t> parse_count(std::string_view text) {
+    if (text.empty() || text.size() > 9) return std::nullopt;
+    std::size_t value = 0;
+    for (char c : text) {
+        if (c < '0' || c > '9') return std::nullopt;
+        value = value * 10 + static_cast<std::size_t>(c - '0');
+    }
+    return value;
 }
 
 struct ThreadJob {
@@ -194,6 +230,8 @@ int execute_on_big_stack(const Options& options) {
 int main(int argc, char** argv) {
     Options options;
     constexpr std::string_view kEnginePrefix = "--engine=";
+    constexpr std::string_view kBenchPrefix = "--bench=";
+    constexpr std::string_view kBenchOutPrefix = "--bench-out=";
 
     for (int i = 1; i < argc; ++i) {
         std::string_view arg = argv[i];
@@ -209,6 +247,15 @@ int main(int argc, char** argv) {
             options.want_stats = true;
         } else if (arg.substr(0, kEnginePrefix.size()) == kEnginePrefix) {
             options.engine = std::string(arg.substr(kEnginePrefix.size()));
+        } else if (arg.substr(0, kBenchPrefix.size()) == kBenchPrefix) {
+            std::optional<std::size_t> count = parse_count(arg.substr(kBenchPrefix.size()));
+            if (!count || *count == 0) {
+                std::cerr << "rung: --bench needs a positive number of iterations\n";
+                return kExitUsage;
+            }
+            options.bench_iterations = count;
+        } else if (arg.substr(0, kBenchOutPrefix.size()) == kBenchOutPrefix) {
+            options.bench_out = std::string(arg.substr(kBenchOutPrefix.size()));
         } else if (!arg.empty() && arg[0] == '-') {
             std::cerr << "rung: unknown option '" << arg << "'\n";
             print_usage();
@@ -222,6 +269,10 @@ int main(int argc, char** argv) {
     }
     if (options.path == nullptr) {
         print_usage();
+        return kExitUsage;
+    }
+    if (options.bench_iterations.has_value() != !options.bench_out.empty()) {
+        std::cerr << "rung: --bench=N and --bench-out=FILE go together\n";
         return kExitUsage;
     }
     // --dump-bytecode needs only a compiler, not a runnable engine, so it accepts every bytecode

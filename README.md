@@ -53,7 +53,13 @@ ctest --preset debug
 ./build/debug/rung --dump-ast examples/hello.rg
 ./build/debug/rung --dump-bytecode examples/hello.rg                    # stack bytecode
 ./build/debug/rung --dump-bytecode --engine=register examples/hello.rg  # register bytecode
+./build/release/rung --bench=20 --bench-out=out.json bench/fib.rg   # time 20 calls of run()
 ```
+
+The six benchmark programs live in `bench/`; `--bench=N` runs one program's top level and then
+times N calls of its `run()` function in C++, writing the per-call times to the JSON file
+(notes D12). `bench/expected.json` holds each benchmark's checksum, which the `release` preset's
+`bench-check-*` ctest tests verify on every engine (correctness only, never timing).
 
 CI builds and tests on macOS ARM64, Linux ARM64, and Linux x86-64 (inside the `Dockerfile`).
 
