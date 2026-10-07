@@ -309,6 +309,7 @@ TEST_CASE("stack engine: counters count instructions per opcode and calls") {
     CHECK(counters.by_opcode[static_cast<std::size_t>(OpCode::Add)] == 1);
     CHECK(counters.rung_calls == 0);  // the script is not a call
     CHECK(engine.stats_report().find("6 instructions dispatched") != std::string::npos);
+    out.flush();  // `out` still holds the program's "3": it must not flush to a closed file
     std::fclose(file);
 
     program = compile_program("fn f() { return 1; }\nf(); f(); len([1]);\n");
