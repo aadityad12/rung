@@ -9,6 +9,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(RUNG_WERROR "Treat compiler warnings as errors" ON)
 set(RUNG_SANITIZE "" CACHE STRING "Sanitizers to build with: empty, 'address,undefined', or 'thread'")
 
+# Instruction and call counters in the stack VM (notes D5). Compiled out entirely when OFF, so a
+# release build pays nothing. Debug-like presets turn it ON; release leaves it OFF.
+option(RUNG_VM_COUNTERS "Count instructions dispatched per opcode and calls in the VMs" OFF)
+
 option(RUNG_FUZZ "Build the libFuzzer front-end target (needs a clang with libFuzzer)" OFF)
 
 if(RUNG_FUZZ AND RUNG_SANITIZE)
@@ -71,8 +75,13 @@ add_library(rung_core STATIC
   src/resolver.cpp
   src/runtime/ops.cpp
   src/token.cpp
+  src/vm_stack.cpp
 )
 target_include_directories(rung_core PUBLIC src)
+if(RUNG_VM_COUNTERS)
+  # PUBLIC: every translation unit that includes vm_stack.h must agree on the flag.
+  target_compile_definitions(rung_core PUBLIC RUNG_VM_COUNTERS=1)
+endif()
 target_link_libraries(rung_core PRIVATE rung_warnings)
 
 # Executable memory only exists on arm64: an x86-64 CPU cannot run the machine code (notes D6).
@@ -98,6 +107,7 @@ add_executable(rung_unit_tests
   tests/unit/parser_test.cpp
   tests/unit/resolver_test.cpp
   tests/unit/runtime_ops_test.cpp
+  tests/unit/vm_stack_test.cpp
 )
 target_include_directories(rung_unit_tests SYSTEM PRIVATE third_party/doctest)
 if(RUNG_HAS_JIT_MEMORY)
@@ -151,7 +161,7 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
       --skip functions/ten_thousand_and_one_nested_calls_overflow.rg)
   endif()
 
-  foreach(engine tree)
+  foreach(engine tree stack)
     add_test(NAME conformance-${engine}
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
               --rung $<TARGET_FILE:rung> --engine ${engine} --timeout 120)
