@@ -344,5 +344,68 @@ class LadderTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
 
+class RepositoryConfigsTest(unittest.TestCase):
+    """The real scripts/ladder_configs.json against notes D4 and CMakePresets.json.
+
+    bench.py only discovers a bad row (an unknown preset, a flag the engine refuses) when the
+    owner is already on an exclusive machine, so the file is checked here instead."""
+
+    # Notes D4's table, in order: what each row adds to the previous one. The comparison is exact,
+    # so a row that is missing, reordered, or loses a flag a lower rung added fails the test.
+    LADDER = [
+        ("01_tree", "release", "tree", []),
+        ("02_stack", "release", "stack", []),
+        ("03_goto", "release-goto", "stack", []),
+        ("04_nanbox", "release-goto-nanbox", "stack", []),
+        ("05_register", "release-goto-nanbox", "register", []),
+        ("06_super", "release-goto-nanbox", "register", ["--superinstructions"]),
+        ("07_ic", "release-goto-nanbox", "register", ["--superinstructions", "--inline-cache"]),
+        ("08_fold", "release-goto-nanbox", "register",
+         ["--superinstructions", "--inline-cache", "--fold"]),
+        ("09_jit", "release-goto-nanbox", "jit",
+         ["--superinstructions", "--inline-cache", "--fold"]),
+    ]
+
+    # Flags that only some engines accept (src/main.cpp refuses them elsewhere).
+    REGISTER_OR_JIT_ONLY = {"--superinstructions", "--inline-cache"}
+
+    def configs(self):
+        return bench.load_configs(ROOT)
+
+    def test_rows_are_the_cumulative_ladder(self):
+        got = []
+        for config in self.configs():
+            engines = [a for a in config["args"] if a.startswith("--engine=")]
+            self.assertEqual(len(engines), 1, config["id"])
+            flags = [a for a in config["args"] if not a.startswith("--engine=")]
+            got.append((config["id"], config["preset"], engines[0][len("--engine="):], flags))
+        self.assertEqual(got, self.LADDER)
+
+    def test_every_preset_is_a_real_configure_and_build_preset(self):
+        with open(os.path.join(ROOT, "CMakePresets.json"), encoding="utf-8") as f:
+            presets = json.load(f)
+        configure = {p["name"] for p in presets["configurePresets"] if not p.get("hidden")}
+        build = {p["name"] for p in presets["buildPresets"] if not p.get("hidden")}
+        for config in self.configs():
+            self.assertIn(config["preset"], configure, config["id"])
+            self.assertIn(config["preset"], build, config["id"])
+
+    def test_every_flag_is_accepted_by_its_engine(self):
+        for config in self.configs():
+            engine = [a for a in config["args"] if a.startswith("--engine=")][0].split("=")[1]
+            for arg in config["args"]:
+                if arg.startswith("--engine="):
+                    self.assertIn(engine, ("tree", "stack", "register", "jit"), config["id"])
+                elif arg in self.REGISTER_OR_JIT_ONLY:
+                    self.assertIn(engine, ("register", "jit"), f"{config['id']}: {arg}")
+                else:
+                    self.assertEqual(arg, "--fold", f"{config['id']}: unknown flag {arg}")
+
+    def test_the_jit_row_needs_an_arm64_nanbox_build(self):
+        # main.cpp: "--engine=jit" exists only with NaN-boxed values (notes D16).
+        jit = [c for c in self.configs() if "--engine=jit" in c["args"]]
+        self.assertTrue(all(c["preset"] == "release-goto-nanbox" for c in jit))
+
+
 if __name__ == "__main__":
     unittest.main()

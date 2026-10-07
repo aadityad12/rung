@@ -1,5 +1,11 @@
 [
   {"id": "01_tree", "label": "Tree-walker", "preset": "release", "args": ["--engine=tree"]},
-  {"id": "08_fold", "label": "+ constant folding / dead-code elimination", "preset": "release-goto-nanbox", "args": ["--engine=register", "--fold"]},
+  {"id": "02_stack", "label": "Stack VM (switch dispatch, tagged values)", "preset": "release", "args": ["--engine=stack"]},
+  {"id": "03_goto", "label": "+ computed-goto dispatch", "preset": "release-goto", "args": ["--engine=stack"]},
+  {"id": "04_nanbox", "label": "+ NaN-boxed values", "preset": "release-goto-nanbox", "args": ["--engine=stack"]},
+  {"id": "05_register", "label": "Register VM", "preset": "release-goto-nanbox", "args": ["--engine=register"]},
+  {"id": "06_super", "label": "+ superinstructions", "preset": "release-goto-nanbox", "args": ["--engine=register", "--superinstructions"]},
+  {"id": "07_ic", "label": "+ inline caching for globals", "preset": "release-goto-nanbox", "args": ["--engine=register", "--superinstructions", "--inline-cache"]},
+  {"id": "08_fold", "label": "+ constant folding / dead-code elimination", "preset": "release-goto-nanbox", "args": ["--engine=register", "--superinstructions", "--inline-cache", "--fold"]},
   {"id": "09_jit", "label": "+ baseline JIT", "preset": "release-goto-nanbox", "args": ["--engine=jit", "--superinstructions", "--inline-cache", "--fold"]}
 ]
