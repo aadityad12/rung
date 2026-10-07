@@ -75,6 +75,12 @@
         "RUNG_SANITIZE": "thread",
         "RUNG_VM_COUNTERS": "ON"
       }
+    },
+    {
+      "name": "tsan-goto-nanbox",
+      "displayName": "ThreadSanitizer with computed goto and NaN-boxed values (has the JIT on arm64)",
+      "inherits": "tsan",
+      "cacheVariables": { "RUNG_COMPUTED_GOTO": "ON", "RUNG_NANBOX": "ON" }
     }
   ],
   "buildPresets": [
@@ -86,6 +92,7 @@
     { "name": "release-goto-nanbox", "configurePreset": "release-goto-nanbox" },
     { "name": "asan-goto-nanbox", "configurePreset": "asan-goto-nanbox" },
     { "name": "tsan", "configurePreset": "tsan" },
+    { "name": "tsan-goto-nanbox", "configurePreset": "tsan-goto-nanbox" },
     { "name": "fuzz", "configurePreset": "fuzz" }
   ],
   "testPresets": [
@@ -121,6 +128,11 @@
       "environment": { "UBSAN_OPTIONS": "print_stacktrace=1" }
     },
     { "name": "tsan", "inherits": "base", "configurePreset": "tsan" },
+    {
+      "name": "tsan-goto-nanbox",
+      "inherits": "base",
+      "configurePreset": "tsan-goto-nanbox"
+    },
     { "name": "fuzz", "inherits": "base", "configurePreset": "fuzz" }
   ]
 }

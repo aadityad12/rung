@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -15,10 +16,13 @@ namespace rung {
 // zero-divisor check failed.
 using JitEntry = std::uint32_t (*)(Value* base);
 
-// Where a function stands with the JIT. Only --engine=jit changes it.
+// Where a function stands with the JIT, as the engine's own thread sees it. Only --engine=jit
+// changes it, and only that thread reads or writes it (the background compiler never does).
 enum class JitStatus : std::uint8_t {
     Cold,      // still counting calls and loop back-edges
-    Compiled,  // jit_entry is set; every later call runs machine code
+    Queued,    // --jit-background: handed to the compiler thread, which publishes jit_entry if
+               // the function compiles and never touches this field (notes D8)
+    Compiled,  // jit_entry is set and this thread has seen it; every later call runs machine code
     Rejected,  // outside the whitelist (or the code could not be emitted); stays in the VM
 };
 
@@ -45,10 +49,14 @@ struct ObjFunction : Obj {
     std::vector<Value*> global_cache;
     // Baseline JIT state (notes D16). Kept on the function so the check on every call is a load
     // and a compare, not a table lookup. The machine code itself is owned by the JIT, which
-    // outlives every function it compiled.
+    // outlives every function it compiled. Hotness and status belong to the engine's thread.
     std::uint32_t jit_hotness = 0;  // calls plus loop back-edges counted so far
     JitStatus jit_status = JitStatus::Cold;
-    JitEntry jit_entry = nullptr;
+    // The handoff (notes D8): the only field of a function the background compiler writes. It
+    // stores the finished code here with a release store, after the code is written and the
+    // instruction cache flushed; the engine's thread reads it with an acquire load before every
+    // call, so seeing the pointer guarantees seeing the code it points to.
+    std::atomic<JitEntry> jit_entry{nullptr};
 
     explicit ObjFunction(ObjString* n) : Obj(ObjKind::Function), name(n) {}
 };

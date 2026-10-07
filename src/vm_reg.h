@@ -75,6 +75,11 @@ public:
     }
 
     const RegVmCounters& counters() const { return counters_; }
+#if RUNG_JIT
+    // The attached JIT, or null for --engine=register. For tests (waiting for the compiler
+    // thread, reading its counters).
+    jit::Jit* jit() { return jit_.get(); }
+#endif
 
 private:
     // Register file allocation: the same trade-off as the stack VM's value stack (see

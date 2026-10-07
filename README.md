@@ -23,8 +23,9 @@ matches the one below it on the other five benchmarks (marked ‡). What each ru
 differ is in [`docs/notes.md`](docs/notes.md) §5.
 
 > **Status: under construction.** The tree-walking interpreter, the stack VM, the register VM
-> and the baseline JIT (arm64 only) run Rung programs and pass the conformance suite.
-> Background compilation is not built yet. Every number in this README comes from a committed
+> and the baseline JIT (arm64 only) run Rung programs and pass the conformance suite, and the
+> JIT can compile on a background thread (`--jit-background`); what that does to per-call
+> latency has not been measured yet. Every number in this README comes from a committed
 > file in `results/` through `scripts/ladder.py`, which writes the summary above and the tables
 > below. None are hand-written.
 
@@ -56,7 +57,9 @@ source -> lexer -> parser -> resolver -> [fold] +--> stack compiler -> stack VM 
                                                 +--> register compiler -> [superinstructions]
                                                        -> register VM              --engine=register
                                                           +--> baseline JIT        --engine=jit
-                                                               (arm64 machine code)
+                                                               (arm64 machine code; with
+                                                               --jit-background, compiled on
+                                                               a second thread)
 ```
 
 Source files: `src/lexer.cpp`, `parser.cpp`, `resolver.cpp`, `fold.cpp` (`--fold`),
@@ -68,7 +71,9 @@ tree, and the resolver works out where each variable lives (notes D11). `--fold`
 simplifies the tree. Then one engine runs it. The tree-walker runs the tree directly; the two
 compilers turn it into bytecode for their VM (stack bytecode, or the register bytecode of notes
 D14). The JIT is not a separate engine: it is the register VM, which hands hot functions that
-fit its whitelist to an ARM64 code generator (notes D3, D16). Computed-goto dispatch and
+fit its whitelist to an ARM64 code generator (notes D3, D16), either at once or, with
+`--jit-background`, on a compiler thread while the VM keeps interpreting them (notes D8 has the
+thread-safety and garbage-collection protocol). Computed-goto dispatch and
 NaN-boxed values are build options (CMake presets), shared by both VMs. Every engine gets its
 arithmetic, comparisons, printing, error messages and garbage collector from one shared runtime
 (`src/runtime/`, notes D10), which is why they produce byte-identical output and why a rung can
@@ -81,7 +86,8 @@ Needs CMake 3.25+, Ninja, and Clang with C++20.
 ```sh
 cmake --preset debug          # also: release, asan (Address + UB sanitizers), tsan, fuzz,
                                 # release-goto and asan-goto (computed-goto dispatch),
-                                # release-goto-nanbox and asan-goto-nanbox (+ NaN-boxed values)
+                                # release-goto-nanbox and asan-goto-nanbox (+ NaN-boxed values),
+                                # tsan-goto-nanbox (ThreadSanitizer with the JIT)
 cmake --build --preset debug
 ctest --preset debug
 ./build/debug/rung examples/hello.rg          # runs on the tree-walker (--engine=tree)
@@ -94,6 +100,8 @@ cmake --preset release-goto-nanbox && cmake --build --preset release-goto-nanbox
 ./build/release-goto-nanbox/rung --engine=jit --jit-log tests/conformance/jit/loop_sum.rg
 #   --jit-log: each compile, rejection and bail-out to stderr; --jit-threshold=N (default 1000):
 #   calls plus loop back-edges before a function is compiled
+./build/release-goto-nanbox/rung --engine=jit --jit-background --jit-log bench/warmup.rg
+#   --jit-background: compile on a second thread while the VM keeps running (notes D8)
 ./build/debug/rung --gc-stress --stats examples/hello.rg   # collect on every allocation; heap stats
 ./build/debug/rung --engine=register --fold --stats examples/hello.rg   # constant folding + dead-code removal
 ./build/debug/rung --dump-tokens examples/hello.rg
@@ -103,10 +111,13 @@ cmake --preset release-goto-nanbox && cmake --build --preset release-goto-nanbox
 ./build/release/rung --bench=20 --bench-out=out.json bench/fib.rg   # time 20 calls of run()
 ```
 
-The six benchmark programs live in `bench/`; `--bench=N` runs one program's top level and then
-times N calls of its `run()` function in C++, writing the per-call times to the JSON file
-(notes D12). `bench/expected.json` holds each benchmark's checksum, which the `release` preset's
-`bench-check-*` ctest tests verify on every engine (correctness only, never timing).
+The six benchmark programs of the ladder live in `bench/`, with a seventh, `bench/warmup.rg`, a
+plainly labelled warm-up benchmark (64 small functions that all become hot in the same call) for
+comparing synchronous and background JIT compilation (notes D8); `--bench=N` runs one program's
+top level and then times N calls of its `run()` function in C++, writing the per-call times to
+the JSON file (notes D12). `bench/expected.json` holds each benchmark's checksum, which the
+`release` preset's `bench-check-*` ctest tests verify on every engine (correctness only, never
+timing).
 
 CI builds and tests on macOS ARM64, Linux ARM64, and Linux x86-64 (inside the `Dockerfile`).
 
@@ -133,16 +144,19 @@ Five layers, each catching something the others cannot:
    all the register-VM rungs on at once as `conformance-register-all-rungs`). The JIT runs the
    suite with `--jit-threshold=1`, so every function the JIT can compile is compiled on its first
    call, also with `--superinstructions` and with every rung on (`conformance-jit-fold`,
-   `conformance-jit-superinstructions`, `conformance-jit-all-rungs`); in a build without the JIT
-   they are reported as skipped.
+   `conformance-jit-superinstructions`, `conformance-jit-all-rungs`), and with `--jit-background`
+   (`conformance-jit-background`, with `--gc-stress`, and with every rung); in a build without
+   the JIT they are reported as skipped.
 2. **Unit tests** (`tests/unit/`, [doctest](https://github.com/doctest/doctest)). Each C++
    module on its own: the lexer, parser, resolver, runtime and GC, the tree-walker, both
    compilers and both VMs, the ARM64 encoder (checked byte for byte against LLVM), and the
-   JIT's whitelist and generated code (run directly on a register file).
+   JIT's whitelist and generated code (run directly on a register file), and the background
+   compiler's handoff, GC rooting and shutdown.
    `ctest --preset debug` runs them.
 3. **Sanitizers.** The `asan` preset builds everything with AddressSanitizer and
-   UndefinedBehaviorSanitizer, and `tsan` with ThreadSanitizer (for the background JIT thread).
-   Warnings are errors. Run `asan` before every PR.
+   UndefinedBehaviorSanitizer, and `tsan` with ThreadSanitizer. `tsan-goto-nanbox` is the
+   ThreadSanitizer build with the JIT: it runs the unit tests and the conformance suite with the
+   background compiler thread (notes D8). Warnings are errors. Run `asan` before every PR.
 4. **Fuzzing.** A coverage-guided libFuzzer target feeds random bytes to the lexer, parser and
    resolver, and must never crash, hang, leak or trigger a sanitizer (details below). It stops
    before execution, because a valid Rung program may loop forever.
@@ -237,6 +251,8 @@ _This section is generated by `scripts/ladder.py` from the files in `results/`. 
 | --- | --- | --- | --- | --- | --- | --- |
 | `09_jit` + baseline JIT | 2.5 µs (0.00089%) ‡ | 17.7 µs (0.0065%) | 2.6 µs (0.00079%) ‡ | 5.1 µs (0.00078%) ‡ | 5.2 µs (0.00019%) ‡ | 5.9 µs (0.00064%) ‡ |
 
+**Background compilation** (notes D8): `jit_sync` (the JIT compiling on the engine's thread, row 09's arguments) against `jit_background` (the same with `--jit-background`). These are not ladder rows. Time of one `run()` call, p50 / p99 / max in ms, nearest-rank over every measured call of every run pooled; lower is better. Not measured yet: `python3 scripts/bench.py --configs jit_sync jit_background` measures them together (notes D5).
+
 **Provenance** (from `meta` in each results file):
 
 | Configuration | Commit | Date | Machine | Power | Measured |
@@ -263,7 +279,8 @@ Low Power Mode off, close other apps, and leave it alone while it runs.
 
 ```sh
 git status                                  # must be clean: results are tied to a commit
-python3 scripts/bench.py                    # builds the presets, measures every row
+python3 scripts/bench.py                    # builds the presets, measures every configuration
+python3 scripts/bench.py --configs jit_sync jit_background   # only the background-JIT pair (notes D8)
 python3 scripts/ladder.py                   # rewrites the tables above and the summary at the top
 python3 scripts/ladder.py --check           # what CI runs
 ```

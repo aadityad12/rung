@@ -25,6 +25,8 @@ def main():
                         help="pass --inline-cache (register engine only)")
     parser.add_argument("--superinstructions", action="store_true",
                         help="pass --superinstructions (register engine only)")
+    parser.add_argument("--jit-background", action="store_true",
+                        help="pass --jit-background (jit engine only)")
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
 
@@ -44,6 +46,8 @@ def main():
                 cmd.append("--inline-cache")
             if args.superinstructions:
                 cmd.append("--superinstructions")
+            if args.jit_background:
+                cmd.append("--jit-background")
             cmd += ["--bench=1", f"--bench-out={out}", os.path.join(bench_dir, name + ".rg")]
             try:
                 run = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)

@@ -155,3 +155,37 @@ pairs: 1910015 opcode pairs dispatched, 16 distinct
   DEFINE_GLOBAL  -> RETURN_NIL                1    0.0%
   ADD            -> RETURN                    1    0.0%
   CLOSURE        -> DEFINE_GLOBAL             1    0.0%
+
+== warmup
+vm: 136832 instructions dispatched, 65 calls, 0 native calls
+pairs: 136830 opcode pairs dispatched, 34 distinct
+  ADD            -> JUMP                  16426   12.0%
+  LT             -> JUMP_IF_FALSE         16000   11.7%
+  JUMP           -> LT                    15936   11.6%
+  ADD            -> MOD                    9372    6.8%
+  JUMP_IF_FALSE  -> MOD                    7984    5.8%
+  MOD            -> ADD                    7968    5.8%
+  MOD            -> EQ                     7968    5.8%
+  EQ             -> JUMP_IF_FALSE          7968    5.8%
+  MUL            -> ADD                    5324    3.9%
+  JUMP_IF_FALSE  -> MUL                    5324    3.9%
+  JUMP_IF_FALSE  -> ADD                    4474    3.3%
+  MOD            -> MOVE                   4047    3.0%
+  MOVE           -> MOVE                   3984    2.9%
+  MOVE           -> ADD                    3984    2.9%
+  ADD            -> ADD                    3984    2.9%
+  SUB            -> ADD                    3494    2.6%
+  JUMP_IF_FALSE  -> SUB                    3494    2.6%
+  DIV            -> JUMP                   2644    1.9%
+  JUMP           -> MOD                    2644    1.9%
+  JUMP_IF_FALSE  -> DIV                    2644    1.9%
+  JUMP           -> ADD                     490    0.4%
+  LOADK          -> LOADK                    97    0.1%
+  CLOSURE        -> DEFINE_GLOBAL            65    0.0%
+  MOVE           -> GET_GLOBAL               64    0.0%
+  MOVE           -> CALL                     64    0.0%
+  LOADK          -> LT                       64    0.0%
+  GET_GLOBAL     -> MOVE                     64    0.0%
+  DEFINE_GLOBAL  -> CLOSURE                  64    0.0%
+  CALL           -> LOADK                    64    0.0%
+  RETURN         -> ADD                      64    0.0%

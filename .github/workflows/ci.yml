@@ -17,7 +17,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [debug, release, release-goto-nanbox, asan, asan-goto, asan-goto-nanbox, tsan]
+        preset: [debug, release, release-goto-nanbox, asan, asan-goto, asan-goto-nanbox, tsan,
+                 tsan-goto-nanbox]
     steps:
       - uses: actions/checkout@v5
       - name: Install Ninja
@@ -31,7 +32,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [debug, release, release-goto-nanbox, asan, asan-goto, asan-goto-nanbox, tsan]
+        preset: [debug, release, release-goto-nanbox, asan, asan-goto, asan-goto-nanbox, tsan,
+                 tsan-goto-nanbox]
     steps:
       - uses: actions/checkout@v5
       - name: Install toolchain
@@ -40,7 +42,7 @@ jobs:
       # memory mapping") when the kernel randomizes mmap addresses over more bits than the
       # sanitizer expects. This is a known Linux/TSan issue; 28 bits is the value TSan supports.
       - name: Lower mmap ASLR entropy for ThreadSanitizer
-        if: matrix.preset == 'tsan'
+        if: startsWith(matrix.preset, 'tsan')
         run: sudo sysctl vm.mmap_rnd_bits=28
       - run: cmake --preset ${{ matrix.preset }}
       - run: cmake --build --preset ${{ matrix.preset }}

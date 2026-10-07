@@ -52,6 +52,7 @@ struct Options {
     std::optional<std::size_t> bench_iterations;
     std::string bench_out;
     bool jit_log = false;
+    bool jit_background = false;
     std::optional<std::uint32_t> jit_threshold;
     std::string engine = "tree";
     const char* path = nullptr;
@@ -66,11 +67,13 @@ void print_usage() {
     }
     std::cerr << "] [--gc-stress] [--stats[=pairs]] [--fold] [--inline-cache]\n"
                  "            [--superinstructions] [--jit-threshold=N] [--jit-log]\n"
+                 "            [--jit-background]\n"
                  "            [--dump-tokens | --dump-ast | --dump-bytecode]\n"
                  "            [--bench=N --bench-out=FILE] <file.rg>\n"
                  "       --dump-bytecode also accepts --engine=stack|register|jit\n"
                  "       --inline-cache and --superinstructions need --engine=register or jit\n"
-                 "       --jit-threshold (default 1000) and --jit-log need --engine=jit\n";
+                 "       --jit-threshold (default 1000), --jit-log and --jit-background need\n"
+                 "       --engine=jit\n";
 }
 
 std::optional<std::string> read_file(const std::string& path) {
@@ -209,6 +212,7 @@ int execute(const Options& options) {
     engine_options.superinstructions = options.superinstructions;
     if (options.jit_threshold) engine_options.jit_threshold = *options.jit_threshold;
     if (options.jit_log) engine_options.jit_log = stderr;
+    engine_options.jit_background = options.jit_background;
     std::unique_ptr<rung::Engine> engine =
         rung::make_engine(options.engine, heap, out, engine_options);
 
@@ -324,6 +328,8 @@ int main(int argc, char** argv) {
             options.superinstructions = true;
         } else if (arg == "--jit-log") {
             options.jit_log = true;
+        } else if (arg == "--jit-background") {
+            options.jit_background = true;
         } else if (arg.substr(0, kThresholdPrefix.size()) == kThresholdPrefix) {
             options.jit_threshold = parse_threshold(arg.substr(kThresholdPrefix.size()));
             if (!options.jit_threshold) {
@@ -386,8 +392,9 @@ int main(int argc, char** argv) {
         print_usage();
         return kExitUsage;
     }
-    if ((options.jit_threshold || options.jit_log) && options.engine != "jit") {
-        std::cerr << "rung: --jit-threshold and --jit-log need --engine=jit\n";
+    if ((options.jit_threshold || options.jit_log || options.jit_background) &&
+        options.engine != "jit") {
+        std::cerr << "rung: --jit-threshold, --jit-log and --jit-background need --engine=jit\n";
         print_usage();
         return kExitUsage;
     }

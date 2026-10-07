@@ -85,7 +85,7 @@ void ExecBuffer::write(const uint32_t* words, size_t n) {
 #if defined(__APPLE__)
     // Per-thread switch: 0 means "this thread may write MAP_JIT pages (and may not execute
     // them)". Other threads are unaffected, which is why the background compiler (notes D8) can
-    // write while the main thread runs. If we forget this, the memcpy below faults with
+    // write while the main thread runs. If we forget this, the copy below faults with
     // EXC_BAD_ACCESS the first time we touch the page.
     pthread_jit_write_protect_np(0);
 #else
@@ -95,9 +95,14 @@ void ExecBuffer::write(const uint32_t* words, size_t n) {
     }
 #endif
 
-    // Step 2: copy the instruction words in, after the zero header (see kHeaderBytes). memcpy
-    // says plainly that this is raw bytes going into memory the type system knows nothing about.
-    if (bytes != 0) std::memcpy(code, words, bytes);
+    // Step 2: copy the instruction words in, after the zero header (see kHeaderBytes). One
+    // 4-byte store per word rather than memcpy, on purpose: ThreadSanitizer on macOS does not
+    // record the writes of a memcpy (checked with a two-thread probe: a memcpy and a later
+    // unsynchronised read of the same bytes went unreported, plain stores were reported), and
+    // background compilation (notes D8) relies on TSan seeing these writes, so that a handoff
+    // that fails to order them before the engine's thread reads the code is reported.
+    auto* dst = reinterpret_cast<uint32_t*>(code);
+    for (size_t i = 0; i < n; ++i) dst[i] = words[i];
     size_ = bytes;
 
     // Step 3: make the memory executable again.
@@ -112,7 +117,7 @@ void ExecBuffer::write(const uint32_t* words, size_t n) {
 #endif
 
     // Step 4: flush the instruction cache. ARM64 has separate instruction and data caches that
-    // the hardware does not keep coherent: our memcpy went through the data cache, but the CPU
+    // the hardware does not keep coherent: our stores went through the data cache, but the CPU
     // fetches instructions through the instruction cache, which may still hold the old bytes
     // (or garbage) for these addresses. The builtin emits the required clean/invalidate
     // sequence (`dc cvau`, `ic ivau`, barriers; sys_icache_invalidate on macOS).

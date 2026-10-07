@@ -184,29 +184,33 @@ endif()
 # forced to run on every allocation, which is what finds a value the GC cannot see (notes D10).
 # The generous per-test timeout is for --gc-stress under the sanitizers.
 #
-# Not registered in the tsan preset: the suite's 10,000-deep recursion tests need a native stack
-# of 100 MB or more, and ThreadSanitizer on macOS faults after about 90 MB of any big thread
-# stack, whatever size was requested. The tree-walker is single-threaded, so ThreadSanitizer has
-# nothing to check in it; the tsan job exists for the JIT's threads (notes D8).
-if(NOT RUNG_SANITIZE STREQUAL "thread")
-  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-  # Under --gc-stress every allocation is a full collection, so a program that keeps N calls
-  # active does N collections that each visit about N scopes: the work grows with the square of
-  # the depth. The six tests that go 6,000 to 10,000 calls deep each took more than 4 seconds under
-  # ASan on a laptop (25 seconds for the deepest) and did not finish in five minutes on the
-  # Linux arm64 CI runner, so ASan runs skip them (the runner names each one as SKIPPED). They still run under --gc-stress in
-  # debug and release, and under ASan without it, and every shallower recursion test runs in all.
-  set(RUNG_GC_STRESS_SKIPS)
-  if(RUNG_SANITIZE MATCHES "address")
-    set(RUNG_GC_STRESS_SKIPS
-      --skip functions/call_depth_resets_after_returning.rg
-      --skip functions/infinite_recursion_overflows_the_stack.rg
-      --skip functions/mutual_recursion_overflows_the_stack.rg
-      --skip functions/nine_thousand_nine_hundred_ninety_nine_nested_calls_succeed.rg
-      --skip functions/stack_overflow_keeps_earlier_output.rg
-      --skip functions/ten_thousand_and_one_nested_calls_overflow.rg)
-  endif()
+# Under --gc-stress every allocation is a full collection, so a program that keeps N calls
+# active does N collections that each visit about N scopes: the work grows with the square of
+# the depth. The six tests that go 6,000 to 10,000 calls deep each took more than 4 seconds under
+# ASan on a laptop (25 seconds for the deepest) and did not finish in five minutes on the
+# Linux arm64 CI runner, so ASan runs skip them (the runner names each one as SKIPPED). They still run under --gc-stress in
+# debug and release, and under ASan without it, and every shallower recursion test runs in all.
+# ThreadSanitizer builds, which are slower still, skip the same six under --gc-stress.
+set(RUNG_GC_STRESS_SKIPS)
+if(RUNG_SANITIZE MATCHES "address|thread")
+  set(RUNG_GC_STRESS_SKIPS
+    --skip functions/call_depth_resets_after_returning.rg
+    --skip functions/infinite_recursion_overflows_the_stack.rg
+    --skip functions/mutual_recursion_overflows_the_stack.rg
+    --skip functions/nine_thousand_nine_hundred_ninety_nine_nested_calls_succeed.rg
+    --skip functions/stack_overflow_keeps_earlier_output.rg
+    --skip functions/ten_thousand_and_one_nested_calls_overflow.rg)
+endif()
+
+# Most of the suite is not registered in ThreadSanitizer builds: the suite's 10,000-deep
+# recursion tests need a native stack of 100 MB or more on the tree-walker, and ThreadSanitizer on
+# macOS faults after about 90 MB of any big thread stack, whatever size was requested. The
+# tree-walker and the VMs are single-threaded, so ThreadSanitizer has nothing to check in them;
+# the tsan builds exist for the JIT's compiler thread (notes D8), whose runs are registered after
+# this block in every build.
+if(NOT RUNG_SANITIZE STREQUAL "thread")
 
   # Engines that exist on this platform; later engine issues add theirs here.
   set(RUNG_ENGINES tree stack register)
@@ -312,6 +316,10 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
       add_test(NAME bench-check-jit-all-rungs
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
                 --rung $<TARGET_FILE:rung> --engine jit --superinstructions --inline-cache)
+      add_test(NAME bench-check-jit-background-all-rungs
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
+                --rung $<TARGET_FILE:rung> --engine jit --superinstructions --inline-cache
+                --jit-background)
       # The README marks the JIT row's cells for benchmarks the JIT compiles nothing in
       # (bench/jit_not_compiled.json); this checks that list against --jit-log (issue #24).
       add_test(NAME bench-jit-coverage
@@ -353,3 +361,27 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
                        conformance-jit-superinstructions conformance-jit-all-rungs
                        PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+# Background compilation (Engine 5, notes D8): the whole suite with hot functions compiled on the
+# JIT's compiler thread, in every build, ThreadSanitizer ones included; this is what the tsan CI
+# jobs check the handoff and the GC protocol with (the tsan-goto-nanbox preset is the one with a
+# JIT). With --jit-threshold=1 every function is queued on its first call, so the compiler thread
+# is busy while the program runs, and with --gc-stress the collector runs on every allocation
+# while the compiler thread reads the functions it has queued. Skipped where there is no JIT.
+set(RUNG_JIT_BACKGROUND_ARGS --rung-arg=--jit-threshold=1 --rung-arg=--jit-background)
+if(NOT RUNG_HAS_JIT)
+  list(APPEND RUNG_JIT_BACKGROUND_ARGS --expect-unavailable)
+endif()
+add_test(NAME conformance-jit-background
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+          --rung $<TARGET_FILE:rung> --engine jit ${RUNG_JIT_BACKGROUND_ARGS} --timeout 300)
+add_test(NAME conformance-jit-background-gc-stress
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+          --rung $<TARGET_FILE:rung> --engine jit ${RUNG_JIT_BACKGROUND_ARGS} --gc-stress
+          --timeout 300 ${RUNG_GC_STRESS_SKIPS})
+add_test(NAME conformance-jit-background-all-rungs
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+          --rung $<TARGET_FILE:rung> --engine jit ${RUNG_JIT_BACKGROUND_ARGS} --superinstructions
+          --inline-cache --fold --timeout 300)
+set_tests_properties(conformance-jit-background conformance-jit-background-gc-stress
+                     conformance-jit-background-all-rungs PROPERTIES SKIP_RETURN_CODE 77)

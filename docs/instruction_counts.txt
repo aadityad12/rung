@@ -16,6 +16,7 @@ machine code and are not counted (notes section 5, Engine 4).
 | nbody | 22,578,652 | 8,491,383 | 0.38 | 6,395,976 | 6,395,972 | 55,013 |
 | sieve | 29,901,158 | 9,902,205 | 0.33 | 6,201,614 | 6,201,614 | 1 |
 | strcat | 5,674,024 | 1,910,017 | 0.34 | 1,212,015 | 1,212,015 | 1 |
+| warmup | 389,630 | 136,832 | 0.35 | 100,422 | 100,422 | 65 |
 
 == closures
 -- stack VM
@@ -342,3 +343,69 @@ vm: 1212015 instructions dispatched, 1 calls, 30001 native calls
   ADD_JUMP       334000
 -- register VM + superinstructions + inline cache + folding
 vm: 1212015 instructions dispatched, 1 calls, 30001 native calls
+
+== warmup
+-- stack VM
+vm: 389630 instructions dispatched, 65 calls, 0 native calls
+  CONST          56868
+  NIL            1
+  POP            67856
+  GET_LOCAL      96427
+  SET_LOCAL      39904
+  GET_GLOBAL     64
+  DEFINE_GLOBAL  65
+  ADD            29782
+  SUB            3494
+  MUL            5324
+  DIV            2644
+  MOD            20000
+  EQ             7968
+  LT             16000
+  JUMP           3134
+  JUMP_IF_FALSE  23968
+  LOOP           15936
+  CALL           64
+  CLOSURE        65
+  RETURN         66
+-- register VM
+vm: 136832 instructions dispatched, 65 calls, 0 native calls
+  MOVE           8096
+  LOADK          162
+  GET_GLOBAL     64
+  DEFINE_GLOBAL  65
+  ADD            29782
+  SUB            3494
+  MUL            5324
+  DIV            2644
+  MOD            20000
+  EQ             7968
+  LT             16000
+  JUMP           19070
+  JUMP_IF_FALSE  23968
+  CALL           64
+  CLOSURE        65
+  RETURN         65
+  RETURN_NIL     1
+-- register VM + superinstructions
+vm: 100422 instructions dispatched, 65 calls, 0 native calls
+  MOVE           8096
+  LOADK          162
+  GET_GLOBAL     64
+  DEFINE_GLOBAL  65
+  ADD            9372
+  SUB            3494
+  MUL            5324
+  DIV            2644
+  MOD            12032
+  EQ             7968
+  JUMP           6628
+  JUMP_IF_FALSE  7968
+  CALL           64
+  CLOSURE        65
+  RETURN         65
+  RETURN_NIL     1
+  LT_JUMP_IF_FALSE 16000
+  ADD_JUMP       12442
+  MOD_ADD        7968
+-- register VM + superinstructions + inline cache + folding
+vm: 100422 instructions dispatched, 65 calls, 0 native calls

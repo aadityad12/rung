@@ -186,6 +186,103 @@ still needs sign-off. Nothing `PROPOSED` should be built on without checking fir
   - Linux runners need `vm.mmap_rnd_bits` lowered to 28 before TSan starts; that is a
     kernel/TSan startup issue unrelated to the JIT and is set in `ci.yml`.
 
+**Handoff and GC protocol, as built (issue #27).** `--jit-background` (needs `--engine=jit`)
+gives the JIT one compiler thread. Code: `src/jit/jit.{h,cpp}` (queue, thread, handoff),
+`src/vm_reg.cpp` (`jit_count`, `jit_frame_entry`, `mark_roots`). The rules above were specified
+by the owner; the details below are the implementer's and open to review.
+
+- **Who owns what.** The engine's thread owns every heap object and every field of a function
+  except one: it alone runs the VM, allocates, collects, and reads and writes `jit_hotness` and
+  `jit_status`. The compiler thread owns its queue entry while compiling, the instruction words
+  it generates, and a fresh `ExecBuffer` that no other thread knows about until it is published.
+  The only heap memory it writes is the function's `std::atomic<JitEntry> jit_entry`. It never
+  allocates on the `Heap` (which is not thread-safe); its own allocations (`std::vector`,
+  `std::string`, `mmap`) go to the system allocator.
+- **Queueing.** When a function reaches the threshold, `jit_count` calls `Jit::enqueue`, which
+  sets `jit_status = Queued` and pushes it on a `std::deque` under a mutex, and the VM carries on
+  interpreting it. The compiler thread waits on a condition variable, pops one function, sets
+  `compiling_` to it, and releases the lock while it compiles.
+- **What the compiler reads, and why that needs no lock.** `function.reg` (instructions,
+  constants, frame size), `function.name->chars` (for the log) and the `kind` byte of constant
+  objects (the whitelist rejects string constants). The register compiler builds all of these
+  for every function before the program starts, and nothing changes them afterwards: the VM's
+  run-time state lives in other fields (`global_cache`, `jit_hotness`, `jit_status`), and the
+  VM's own reads of the bytecode while it keeps interpreting the function are reads too.
+- **The handoff.** The compiler writes the code into its `ExecBuffer`, flushes the instruction
+  cache over it, then stores the entry pointer with `memory_order_release`. Before every call
+  of a compiled function the engine's thread loads it with `memory_order_acquire`, in C++
+  (`jit_frame_entry`). If it sees the pointer, everything the compiler did before the store (the
+  code bytes, the cache maintenance) happens-before the call. With a plain store, the pointer
+  could become visible before the bytes (compiler or CPU reordering), and the engine would jump
+  into half-written code. The first time the engine's thread sees code for a `Queued` function,
+  `Jit::adopt` executes an `ISB` (the ARM architecture requires the core that runs code another
+  core wrote to discard anything it may have fetched early) and sets `jit_status = Compiled`.
+- **What ThreadSanitizer can and cannot see.** TSan instruments C++ loads and stores; it cannot
+  see generated code, and instruction fetches are not loads. So the design keeps every shared
+  access in C++: the queue and counters under the mutex, the pointer as an atomic, and machine
+  code that reads and writes only the register file, which the compiler thread never touches.
+  Two details make the code bytes themselves visible to TSan. (1) `ExecBuffer::write` copies the
+  words with one 4-byte store each, not `memcpy`: a two-thread probe on macOS showed TSan does not
+  report a race between a `memcpy` and a later unsynchronised read of the same bytes, while it
+  does with plain stores. (2) `adopt` reads the code's first word as data, in C++ (also a sanity
+  check: no generated code starts with 0, `udf #0`). The publishing store is made *before* the
+  compiler takes the mutex to record its result, because the mutex would otherwise order the two
+  threads whenever the engine's thread next takes it (to queue a function, or to collect) and hide
+  a broken atomic. Checked by breaking it on purpose (not committed): with the store weakened to
+  `memory_order_relaxed`, the stress unit test ("code is published while the collector runs")
+  reported a data race in 5 of 5 runs, and `conformance-jit-background` in the `tsan-goto-nanbox`
+  build failed 1 test; with the engine's load weakened to relaxed instead, 1 to 3 tests failed in
+  each of 3 runs. With both as committed, nothing is reported.
+- **The GC.** The collector is precise and stop-the-world on the engine's thread (D10) and does
+  not stop for the compiler. A queued or in-progress function is a GC root: the engine's root
+  marker calls `Jit::mark_pending`, which marks every queued function and `compiling_` under the
+  mutex. Marking a function also marks its name and constants (`Heap::trace`), so nothing the
+  compiler reads can be freed while it reads it. The collector runs concurrently with the
+  compiler without a data race because what it writes and what the compiler reads are disjoint:
+  in heap objects it writes only headers (`marked`, `next`, separate fields from `kind`), and it
+  frees only unmarked objects; the compiler reads no header field but `kind`, which never
+  changes. The
+  compiler publishes while the function is still in `compiling_`, then clears `compiling_` under
+  the mutex; after that it never touches the function, so a collection may free it (its machine
+  code stays mapped, owned by the JIT, until the engine is destroyed, D16). Rejected alternatives:
+  making the collector wait for the compile in progress (that puts the compile pause back on the
+  engine's thread, which is what this engine exists to remove), and copying the bytecode at
+  enqueue time (constants hold pointers to strings, so the function would still have to be
+  pinned, and the copy is work on the engine's thread). `conformance-jit-background-gc-stress`
+  runs the suite with a collection on every allocation while the compiler works.
+- **Rejected functions** stay `Queued` (the compiler never writes `jit_status`), so they are
+  never queued again and their `jit_entry` stays null: the VM keeps running them.
+- **Shutdown.** `Jit::shutdown` (called by the engine's destructor before it removes its root
+  marker, and by the JIT's destructor) sets a stop flag, drops what is still queued (logged as
+  `[jit] cancelled NAME: still queued at exit`), lets the compile in progress finish and be
+  recorded, and joins the thread. `main` destroys the engine before it returns, so the process
+  never exits with the compiler thread running.
+- **Scheduling (macOS).** Each queued function carries the QoS class of the thread that queued
+  it, and the compiler thread switches to that class before compiling it. In bench mode the
+  engine's thread is `QOS_CLASS_USER_INTERACTIVE` (D5), so the compiler runs at the same class
+  and macOS prefers a performance core for it too; otherwise the measurement would compare
+  compiling inline with compiling on an efficiency core.
+- **Reporting.** `--jit-log` lines from the compiler thread end in `on the compiler thread`;
+  `--stats` adds `on the compiler thread, N queued or in progress`. Bench mode's
+  `jit_compile_ns` is the compiler thread's total, so for the background configuration it is
+  time spent off the engine's thread, not a pause.
+- **Cost in synchronous mode.** `jit_entry` is atomic in both modes, so `--engine=jit` without
+  `--jit-background` now does an acquire load before each call where it did a plain load (in the
+  `release-goto-nanbox` binary, an `ldapr` instead of an `ldr`). Row `09_jit` was measured before
+  this change and has not been re-measured; whether this moves it is not known.
+- **CI.** The `tsan` preset has no JIT (it is not NaN-boxed), so a `tsan-goto-nanbox` preset was
+  added, and its CI jobs (macOS arm64 and Linux arm64) run the unit tests and the whole
+  conformance suite with `--engine=jit --jit-background --jit-threshold=1`, alone, with
+  `--gc-stress` and with every register-VM rung. The tree-walker's deep-recursion problem under
+  TSan (see `CMakeLists.txt`) does not apply: the register VM's calls use its own frame array,
+  not the native stack.
+- **Measurement design (step 2).** `bench/warmup.rg` (64 distinct functions, all compiled, all
+  hot in the 4th call of `run()`; its header explains the sizing), and two configurations that
+  are not ladder rows (D4 fixes the ladder at nine): `jit_sync` (row 09's arguments) and
+  `jit_background` (the same plus `--jit-background`), measured together over every benchmark so
+  the comparison is interleaved. `ladder.py` shows their p50, p99 and max per call in a separate
+  table. The result goes in §5, Engine 5.
+
 ### D9. Lexical rules. `DECIDED` (2026-09-20)
 
 - Keywords: `and else false fn for if let nil or print return true while`. `array`, `len`
@@ -831,6 +928,13 @@ How D5's noise control became code, and the choices D5 left open:
   cell of a benchmark in which the JIT compiles nothing (`bench/jit_not_compiled.json`; the
   `bench-jit-coverage` ctest checks that list against `rung --jit-log` in the
   `release-goto-nanbox` build, so the mark cannot outlive what the JIT does).
+- **Configurations that are not ladder rows.** An entry in `scripts/ladder_configs.json` with
+  `"ladder": false` (the background-compilation pair, D8) is measured by `bench.py` like any
+  other, but `ladder.py` keeps it out of the speedup tables and the summary and shows it in its
+  own table (p50, p99 and max per call), which says whether its configurations came from one
+  invocation (interleaved) or not. The speedup tables show a benchmark's column only once a
+  ladder row has measured it, so `warmup`, added after the rows were recorded, adds no column of
+  "n/a".
 
 ### How the recorded rows were taken (read before comparing rows)
 
@@ -1648,6 +1752,31 @@ How D5's noise control became code, and the choices D5 left open:
   ahead on that basis is the owner's decision. On-stack replacement would remove the
   interpreted first call, but it is outside D8 and not planned.
 
+### Engine 5: background compilation
+
+- **What changed.** `--jit-background` (D8, "Handoff and GC protocol, as built"): a function that
+  reaches the threshold is queued for a compiler thread instead of compiled on the engine's
+  thread, and the VM keeps interpreting it until the compiled code is published. Which functions
+  compile is unchanged (the same whitelist decides on either thread); only when the code arrives
+  changes. The whole conformance suite passes with `--jit-threshold=1 --jit-background`, with and
+  without `--gc-stress` and with every rung, in the `asan-goto-nanbox`, `release-goto-nanbox`
+  and `tsan-goto-nanbox` builds; CI runs the last on macOS arm64 and Linux arm64.
+- **Expected** (written before any measurement). Engine 4's entry already found the existing
+  suite gives a background thread nothing to remove: `loop_sum` is the only benchmark with a
+  compiled function, its one compile lands inside a first call that is interpreted either way,
+  and that first call is its p99. So on the six ladder benchmarks no change in p50, p99 or max is
+  expected beyond noise. `bench/warmup.rg` is where a difference could show: all 64 functions
+  compile in its 4th call. Synchronously, that call pays for 64 compiles. In the background it
+  does not, but the code also arrives later, so the 4th call and possibly the 5th run longer in
+  the interpreter. Whether the net effect on the slowest calls (p99, max) is a gain, a loss or
+  nothing visible depends on how long a compile takes against how long the interpreter runs
+  while waiting for it, which is exactly what has not been measured.
+- **Measured.** Not yet: the measurement needs the development machine to itself (D5) and is
+  the owner's to run (`python3 scripts/bench.py --configs jit_sync jit_background`, then
+  `python3 scripts/ladder.py`). This entry is completed from `results/jit_sync.json` and
+  `results/jit_background.json` once they exist, and if they show no measurable tail effect it
+  says exactly that (D8 step 3).
+
 ### JIT crashes and their causes
 
 - **Baseline JIT (issue #23): no crash was hit while building it.** The direct tests of the
@@ -1656,6 +1785,12 @@ How D5's noise control became code, and the choices D5 left open:
   in a new unit test, and a conformance test (`jit/loop_sum.rg`) first sized at 100,000
   iterations, which the tree-walker could not finish within the runner's timeout under ASan
   (it now loops 10,000 times).
+
+- **Background compilation (issue #27): no crash, and no ThreadSanitizer report in the committed
+  code.** The one surprise was a blind spot, not a bug: TSan on macOS did not see the `memcpy`
+  that wrote the code, so a deliberately broken handoff went unreported until the copy, and the
+  engine's check read of the first word, became plain 4-byte accesses (D8, "What
+  ThreadSanitizer can and cannot see").
 
 - **Intermittent SEGV calling freshly written code, Linux arm64, asan preset only (about 5% of
   runs).** First suspected the instruction cache. It was not: the same code with no flush at all
