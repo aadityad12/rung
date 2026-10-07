@@ -36,13 +36,17 @@ class RegisterEngine final : public Engine {
 public:
     // `inline_cache` is ladder rung 3e (notes §5): GET_GLOBAL and SET_GLOBAL remember where
     // their global lives instead of hashing its name every time.
-    RegisterEngine(Heap& heap, Output& out, bool inline_cache = false);
+    // `superinstructions` is ladder rung 3d: the program is compiled with adjacent instruction
+    // pairs fused (superinstructions.h), so the loop dispatches once for each pair.
+    RegisterEngine(Heap& heap, Output& out, bool inline_cache = false,
+                   bool superinstructions = false);
     ~RegisterEngine() override;
 
     std::string_view name() const override { return "register"; }
     EngineResult run(const Program& program) override;
     CallResult call_global(std::string_view name) override;
     std::string stats_report() const override;
+    std::string pair_report() const override;
 
     const RegVmCounters& counters() const { return counters_; }
 
@@ -112,6 +116,8 @@ private:
     // exists" and "the global is defined" are the same fact.
     std::unordered_map<ObjString*, Value> globals_;
     bool inline_cache_;
+    bool superinstructions_;
+    std::size_t fused_pairs_ = 0;  // pairs the compiler fused in the program run() compiled
     Value result_ = make_nil();  // what the entry frame returned; not rooted
     std::optional<RuntimeError> error_;
     RegVmCounters counters_;

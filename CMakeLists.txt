@@ -86,6 +86,7 @@ add_library(rung_core STATIC
   src/parser.cpp
   src/resolver.cpp
   src/runtime/ops.cpp
+  src/superinstructions.cpp
   src/token.cpp
   src/vm_reg.cpp
   src/vm_stack.cpp
@@ -135,6 +136,7 @@ add_executable(rung_unit_tests
   tests/unit/resolver_test.cpp
   tests/unit/runtime_ops_test.cpp
   tests/unit/runtime_value_test.cpp
+  tests/unit/superinstructions_test.cpp
   tests/unit/vm_reg_test.cpp
   tests/unit/vm_stack_test.cpp
 )
@@ -226,6 +228,34 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
             --rung $<TARGET_FILE:rung> --engine register --inline-cache --gc-stress
             --timeout 300 ${RUNG_GC_STRESS_SKIPS})
 
+  # The register VM's superinstructions (ladder rung 3d) must not change what any program does,
+  # including which line an error is reported on when either half of a fused pair fails. The suite
+  # runs with the flag alone, with the collector on every allocation, and with every register-VM
+  # rung at once (the ladder is cumulative, notes D4, and the rungs share the dispatch loop).
+  add_test(NAME conformance-register-superinstructions
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine register --superinstructions --timeout 120)
+  add_test(NAME conformance-register-superinstructions-gc-stress
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine register --superinstructions --gc-stress
+            --timeout 300 ${RUNG_GC_STRESS_SKIPS})
+  add_test(NAME conformance-register-all-rungs
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_conformance.py
+            --rung $<TARGET_FILE:rung> --engine register --superinstructions --inline-cache
+            --fold --timeout 120)
+
+  # The committed opcode-pair counts (docs/pair_counts*.txt, the evidence behind rung 3d's choice
+  # of fusions) must be what this build's VM counters produce. Counts, not timings; needs the
+  # counters, and not a sanitizer, whose slowdown would only make it take longer.
+  if(RUNG_VM_COUNTERS AND NOT RUNG_SANITIZE)
+    add_test(NAME pair-counts
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/pair_counts.py
+              --rung $<TARGET_FILE:rung> --check)
+    add_test(NAME pair-counts-fused
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/pair_counts.py
+              --rung $<TARGET_FILE:rung> --superinstructions --check)
+  endif()
+
   add_test(NAME bench-cli
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_cli_check.py
             --rung $<TARGET_FILE:rung>)
@@ -247,5 +277,11 @@ if(NOT RUNG_SANITIZE STREQUAL "thread")
     add_test(NAME bench-check-register-inline-cache
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
               --rung $<TARGET_FILE:rung> --engine register --inline-cache)
+    add_test(NAME bench-check-register-superinstructions
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
+              --rung $<TARGET_FILE:rung> --engine register --superinstructions)
+    add_test(NAME bench-check-register-all-rungs
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_bench_check.py
+              --rung $<TARGET_FILE:rung> --engine register --superinstructions --inline-cache)
   endif()
 endif()

@@ -3,7 +3,7 @@
 
 Usage:
     run_conformance.py --rung PATH --engine NAME [--gc-stress] [--fold] [--inline-cache]
-                       [--timeout SEC]
+                       [--superinstructions] [--timeout SEC]
                        [--jobs N] [--skip SUBSTRING]... [FILTER...]
 
 The expected behaviour of each test lives in comments inside the test file (docs/notes.md D13):
@@ -127,6 +127,8 @@ def run_one(args, name, path):
         command.append("--fold")
     if args.inline_cache:
         command.append("--inline-cache")
+    if args.superinstructions:
+        command.append("--superinstructions")
     command.append(path)
     try:
         done = subprocess.run(command, capture_output=True, timeout=args.timeout)
@@ -159,6 +161,8 @@ def main():
                         help="pass --fold to rung (constant folding and dead-code removal)")
     parser.add_argument("--inline-cache", action="store_true",
                         help="pass --inline-cache to rung (register engine only)")
+    parser.add_argument("--superinstructions", action="store_true",
+                        help="pass --superinstructions to rung (register engine only)")
     parser.add_argument("--timeout", type=float, default=10.0,
                         help="seconds allowed per test (default 10)")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1,

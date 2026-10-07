@@ -290,6 +290,12 @@ const char* reg_opcode_name(RegOp op) {
         case RegOp::ArrayAppend: return "ARRAY_APPEND";
         case RegOp::IndexGet: return "INDEX_GET";
         case RegOp::IndexSet: return "INDEX_SET";
+        case RegOp::LtJumpIfFalse: return "LT_JUMP_IF_FALSE";
+        case RegOp::LeJumpIfFalse: return "LE_JUMP_IF_FALSE";
+        case RegOp::AddJump: return "ADD_JUMP";
+        case RegOp::ModAdd: return "MOD_ADD";
+        case RegOp::DivAdd: return "DIV_ADD";
+        case RegOp::IndexSetAdd: return "INDEX_SET_ADD";
     }
     return "UNKNOWN";
 }
@@ -324,10 +330,13 @@ std::size_t disassemble_register_instruction(const RegChunk& chunk, std::size_t 
     bool c_const = (insn_flags(insn) & kFlagCConst) != 0;
     const char* name = reg_opcode_name(op);
     std::size_t next = index + 1;
+    // A superinstruction's own word holds the operands of its first half, laid out as that
+    // instruction's are, so it is shown as the first half. Its second half is the next row.
+    RegOp shown = is_fused(op) ? fused_first(op) : op;
 
     append_format(out, "%04zu %4d ", index, chunk.line_at(index));
     std::string operands;
-    switch (op) {
+    switch (shown) {
         case RegOp::ReturnNil:
             out += name;
             out += '\n';
@@ -370,7 +379,7 @@ std::size_t disassemble_register_instruction(const RegChunk& chunk, std::size_t 
         case RegOp::JumpIfTrue: {
             // The offset counts from the next instruction (see RegOp::Jump).
             long long target = static_cast<long long>(next) + insn_sbx(insn);
-            if (op != RegOp::Jump) operands = reg_text(a) + " ";
+            if (shown != RegOp::Jump) operands = reg_text(a) + " ";
             char buf[32];
             std::snprintf(buf, sizeof buf, "-> %04lld", target);
             operands += buf;
@@ -381,6 +390,13 @@ std::size_t disassemble_register_instruction(const RegChunk& chunk, std::size_t 
         case RegOp::ArrayAppend:
             operands = reg_text(a) + " " + reg_text(b) + " " + std::to_string(c);
             break;
+        case RegOp::LtJumpIfFalse:
+        case RegOp::LeJumpIfFalse:
+        case RegOp::AddJump:
+        case RegOp::ModAdd:
+        case RegOp::DivAdd:
+        case RegOp::IndexSetAdd:
+            break;  // unreachable: `shown` is the first half, which is never a superinstruction
         case RegOp::Capture:
             // Only ever printed under its CLOSURE row, below; a stray one shows its fields.
             operands = std::to_string(a) + " " + std::to_string(b);
@@ -407,7 +423,14 @@ std::size_t disassemble_register_instruction(const RegChunk& chunk, std::size_t 
             return next;
         }
     }
-    append_format(out, "%-14s %s\n", name, operands.c_str());
+    append_format(out, "%-14s %s", name, operands.c_str());
+    // The word after a superinstruction is its second half; say so, because the fused instruction
+    // runs it itself and does not dispatch it (it is still a whole instruction for a jump that
+    // lands on it).
+    if (index > 0 && is_fused(insn_op(chunk.code[index - 1]))) {
+        out += "   ; second half of the row above";
+    }
+    out += '\n';
     return next;
 }
 

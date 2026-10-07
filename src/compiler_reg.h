@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 
 #include "ast.h"
@@ -9,8 +10,15 @@
 
 namespace rung {
 
+// Switches that change the bytecode without changing what it computes (ladder rungs, notes D4).
+struct RegCompileOptions {
+    // Rung 3d: fuse adjacent instruction pairs into superinstructions (superinstructions.h).
+    bool superinstructions = false;
+};
+
 struct RegCompileResult {
     ObjFunction* function = nullptr;  // the top-level script; null on error
+    std::size_t fused_pairs = 0;      // pairs fused in the whole program (rung 3d)
     std::optional<CompileError> error;
 
     bool ok() const { return !error.has_value(); }
@@ -29,6 +37,7 @@ struct RegCompileResult {
 //
 // GC: exactly as compile_stack: functions under construction are rooted by a marker that is
 // removed before returning, and the returned function is NOT rooted.
-RegCompileResult compile_register(const Program& program, Heap& heap);
+RegCompileResult compile_register(const Program& program, Heap& heap,
+                                  RegCompileOptions options = {});
 
 }  // namespace rung
