@@ -243,7 +243,9 @@ TEST_CASE("stats track allocation and collection") {
 
 TEST_CASE("crossing the byte threshold triggers a collection automatically") {
     Heap heap;
-    for (int i = 0; i < 100; ++i) heap.allocate<ObjArray>(std::size_t{1000}, make_nil());
+    // 16 KB of elements per array whatever sizeof(Value) is (16 tagged, 8 NaN-boxed).
+    const std::size_t elements = 16 * 1024 / sizeof(Value);
+    for (int i = 0; i < 100; ++i) heap.allocate<ObjArray>(elements, make_nil());
     CHECK(heap.stats().collections >= 1);  // 100 x 16 KB well exceeds the 1 MiB floor
     CHECK(heap.stats().live_objects < 100);
 }

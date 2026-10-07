@@ -363,6 +363,45 @@ words and the calling convention below were specified by the owner's issue; ever
 - The register bytecode lives in `ObjFunction::reg` (a `RegChunk`); the stack VM's bytecode in
   `ObjFunction::chunk`. A function has one or the other, and the GC marks both constant pools.
 
+### D15. NaN-boxed Value layout. `DECIDED` (2026-10-06, issue #15)
+
+- `RUNG_NANBOX` (CMake option, default OFF; presets `release-goto-nanbox`, `asan-goto-nanbox`)
+  swaps the 16-byte tagged struct in `src/runtime/value.h` for one `uint64_t`. Only that header
+  reads the flag (D4). `static_assert(sizeof(Value) == 8)` in this mode.
+- The layout, top 16 bits first (`s` = sign, `e` = 11 exponent bits, `q` = quiet bit 51,
+  `t` = bit 50, then bits 49..48):
+
+  ```
+  63 62      52 51 50 49 48 47                                0
+   s eeeeeeeeeee q  t  .  .  ------------- payload --------------
+  double  any non-NaN bit pattern, stored as itself
+  NaN     0x7FF8'0000'0000'0000   every NaN is folded to this one (t = 0)
+  int32   0x7FFD'0000'iiii'iiii   low 32 bits = the int
+  nil     0x7FFE'0000'0000'0000
+  false   0x7FFF'0000'0000'0000
+  true    0x7FFF'0000'0000'0001
+  Obj*    0xFFFC'pppp'pppp'pppp   sign set, pointer in the low 48 bits
+  ```
+- A pattern with bits 50..62 all set (`0x7FFC` prefix, or `0xFFFC` with the sign) is "not a
+  double": `is_float` is one AND and compare. No real double has that prefix, because every NaN
+  is canonicalised in `make_float` to `0x7FF8...`, which has bit 50 clear. Without this, a NaN
+  produced with a payload (an operand's payload propagating, or x86's default `0xFFF8...`)
+  could equal a tag and be read back as `nil`, an int or a pointer.
+- Bit 50 is used as well as the quiet bit so the canonical NaN (`0x7FF8...`, the one ARM64 and
+  `std::numeric_limits<double>::quiet_NaN()` produce) is never inside the tag space (clox does
+  the same, for Intel's "QNaN floating-point indefinite").
+- `is_int` checks the whole high word (`bits & 0xFFFF'FFFF'0000'0000 == 0x7FFD'0000'0000'0000`),
+  so bits 32..47 of an int are always zero and `make_int` writes the int through `uint32_t`
+  (D1). `is_bool` is `(bits | 1) == true`.
+- Pointers: user-space addresses on arm64 macOS and Linux (and x86-64 Linux) use at most 48
+  bits. `Heap::link` checks `pointer_fits_in_value` for every object it allocates, in every
+  build type, and aborts with a message if one does not fit; the check is one compare next to a
+  `new`.
+- The default-constructed `Value` stays trivial (no initialiser), like the tagged struct, so the
+  stack VM's uninitialised value stack keeps costing nothing until it is touched.
+- Equality, truthiness and printing are unchanged and still live in `src/runtime/ops.cpp`:
+  `nan != nan` and `-0.0 == 0.0` come from comparing the doubles, never the bits.
+
 ---
 
 ## 2. Semantics contract: rules every engine must follow exactly
@@ -696,6 +735,27 @@ crash and its cause.
 - **Handlers cannot jump out of a destructor's scope.** `goto *` may not leave the scope of a
   variable with a destructor, so handlers that use `std::string` or `std::vector` keep them in an
   inner block that closes before `RUNG_NEXT()`. The `switch` build never needed this.
+
+### Ladder rung 3b: NaN-boxed values
+
+- **What changed.** `RUNG_NANBOX` selects the 8-byte `Value` described in D15. Nothing outside
+  `src/runtime/value.h` reads the flag; the only other source change is the 48-bit pointer check
+  in `Heap::link`. Every unit test and the whole conformance suite (tree-walker and stack VM,
+  with and without `--gc-stress`) pass in `asan-goto-nanbox`, which CI runs on macOS arm64 and
+  Linux arm64. The register VM does not exist yet, so "both VMs" is the stack VM for now.
+- **Expected.** Halving the value size halves the bytes moved for every push, pop, local
+  access, constant load and array element, so more of the working set stays in L1 and each
+  64-byte cache line holds 8 values instead of 4. Against that, every type check and unbox now
+  costs a mask and compare (and `make_float` a NaN check) where the tagged struct read one tag
+  byte. Programs dominated by float arithmetic pay the NaN check on every result; programs that
+  touch large arrays should gain most.
+- **Memory side.** The stack VM's value stack is 6,754,304 slots reserved up front, so its
+  address-space reservation drops from 16 to 8 bytes a slot; pages are only touched as the
+  stack grows, so resident memory changes only for deep recursion. Array element buffers and
+  constant tables also halve. Peak RSS per benchmark comes from the results JSON once measured.
+- **Measured.** Not yet. Row `04_nanbox` needs the benchmark harness (`scripts/bench.py`,
+  `ladder_configs.json`), which is not in the repository yet, and an exclusive machine (D5).
+  Expected versus measured, value-stack bytes and peak RSS are to be filled in here then.
 
 ### JIT crashes and their causes
 

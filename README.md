@@ -41,7 +41,8 @@ Needs CMake 3.25+, Ninja, and Clang with C++20.
 
 ```sh
 cmake --preset debug          # also: release, asan (Address + UB sanitizers), tsan, fuzz,
-                                # release-goto and asan-goto (computed-goto dispatch)
+                                # release-goto and asan-goto (computed-goto dispatch),
+                                # release-goto-nanbox and asan-goto-nanbox (+ NaN-boxed values)
 cmake --build --preset debug
 ctest --preset debug
 ./build/debug/rung examples/hello.rg          # runs on the tree-walker (--engine=tree)
@@ -121,7 +122,9 @@ expected to do, what it measured, and why those differed.
 - Robert Nystrom, [*Crafting Interpreters*](https://craftinginterpreters.com/). The tree-walker
   and the stack-based VM follow the structure of that book's `jlox` and `clox` closely:
   single-pass compilation to a `Chunk`, the dispatch loop, and Lua-style upvalues for closures.
-  Anything that looks like `clox` probably is.
+  Anything that looks like `clox` probably is. The NaN-boxed `Value` follows the book's
+  "Optimization" chapter too (quiet-NaN prefix, sign bit marking a pointer), with an int32 tag
+  added.
 - Roberto Ierusalimschy, Luiz Henrique de Figueiredo, Waldemar Celes,
   [*The Implementation of Lua 5.0*](https://www.lua.org/doc/jucs05.pdf) (2005). The basis for
   the register-based VM.

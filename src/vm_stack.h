@@ -60,9 +60,9 @@ private:
     // stack, so the stack must never move. We allocate it once, at its maximum size, and never
     // grow it: room for 10,000 frames of 256 slots each (a frame holds slot 0 plus at most 255
     // locals, notes D11) plus kTempSlack extra slots for the temporaries an expression pushes.
-    // That is 16 bytes x 6,754,304 slots = about 103 MiB of address space, but the array is
-    // not initialised, so the operating system hands out pages only as the stack is first
-    // touched: a program that never recurses deeply touches a few kilobytes. The alternative,
+    // That is 6,754,304 slots of 16 bytes (8 when NaN-boxed, notes D15) = about 103 MiB (52 MiB)
+    // of address space, but the array is not initialised, so the operating system hands out
+    // pages only as the stack is first touched: a program that never recurses deeply touches a few kilobytes. The alternative,
     // index-based upvalues on a std::vector that can grow, costs an add on every captured-
     // variable access and changes ObjUpvalue, which the later ladder rungs share.
     //

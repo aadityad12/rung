@@ -17,6 +17,10 @@ option(RUNG_VM_COUNTERS "Count instructions dispatched per opcode and calls in t
 # `switch`. Labels-as-values are a GNU extension that clang supports on every platform we build.
 option(RUNG_COMPUTED_GOTO "Dispatch bytecode with computed goto instead of a switch" OFF)
 
+# NaN-boxed values (ladder rung 3b, notes D4, D15). OFF keeps the 16-byte tagged struct. Only
+# src/runtime/value.h reads the flag; every other file sees the same free-function interface.
+option(RUNG_NANBOX "Pack every Value into 8 bytes with NaN-boxing" OFF)
+
 option(RUNG_FUZZ "Build the libFuzzer front-end target (needs a clang with libFuzzer)" OFF)
 
 if(RUNG_FUZZ AND RUNG_SANITIZE)
@@ -95,6 +99,10 @@ if(RUNG_COMPUTED_GOTO)
   set_source_files_properties(src/vm_stack.cpp PROPERTIES COMPILE_OPTIONS
                               -Wno-gnu-label-as-value)
 endif()
+if(RUNG_NANBOX)
+  # PUBLIC: Value's size and layout must agree in every translation unit, tests included.
+  target_compile_definitions(rung_core PUBLIC RUNG_NANBOX=1)
+endif()
 target_link_libraries(rung_core PRIVATE rung_warnings)
 
 # Executable memory only exists on arm64: an x86-64 CPU cannot run the machine code (notes D6).
@@ -121,6 +129,7 @@ add_executable(rung_unit_tests
   tests/unit/parser_test.cpp
   tests/unit/resolver_test.cpp
   tests/unit/runtime_ops_test.cpp
+  tests/unit/runtime_value_test.cpp
   tests/unit/vm_stack_test.cpp
 )
 target_include_directories(rung_unit_tests SYSTEM PRIVATE third_party/doctest)

@@ -1,6 +1,8 @@
 #include "runtime/heap.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 
 #include "runtime/function.h"
 
@@ -21,6 +23,13 @@ void Heap::before_allocate() {
 }
 
 void Heap::link(Obj* obj) {
+    // The NaN-boxed Value keeps only the low 48 bits of a pointer (notes D15). Checked in every
+    // build, not just with asserts on: one compare per allocation is noise next to `new`, and a
+    // truncated pointer would be silent memory corruption.
+    if (!pointer_fits_in_value(obj)) {
+        std::fputs("rung: heap object address does not fit in 48 bits\n", stderr);
+        std::abort();
+    }
     obj->next = objects_;
     objects_ = obj;
     std::size_t size = object_bytes(*obj);
