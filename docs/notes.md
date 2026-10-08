@@ -268,8 +268,10 @@ by the owner; the details below are the implementer's and open to review.
   time spent off the engine's thread, not a pause.
 - **Cost in synchronous mode.** `jit_entry` is atomic in both modes, so `--engine=jit` without
   `--jit-background` now does an acquire load before each call where it did a plain load (in the
-  `release-goto-nanbox` binary, an `ldapr` instead of an `ldr`). Row `09_jit` was measured before
-  this change and has not been re-measured; whether this moves it is not known.
+  `release-goto-nanbox` binary, an `ldapr` instead of an `ldr`). Row `09_jit` was first measured
+  before this change and was re-measured after it (2026-10-08, commit `12d2c10368`); the data
+  shows no slowdown, but cannot isolate a cost smaller than the difference between two
+  invocations (§5, Engine 4, "Re-measured").
 - **CI.** The `tsan` preset has no JIT (it is not NaN-boxed), so a `tsan-goto-nanbox` preset was
   added, and its CI jobs (macOS arm64 and Linux arm64) run the unit tests and the whole
   conformance suite with `--engine=jit --jit-background --jit-threshold=1`, alone, with
@@ -281,7 +283,7 @@ by the owner; the details below are the implementer's and open to review.
   are not ladder rows (D4 fixes the ladder at nine): `jit_sync` (row 09's arguments) and
   `jit_background` (the same plus `--jit-background`), measured together over every benchmark so
   the comparison is interleaved. `ladder.py` shows their p50, p99 and max per call in a separate
-  table. The result goes in §5, Engine 5.
+  table. The result is in §5, Engine 5 ("Measured").
 
 ### D9. Lexical rules. `DECIDED` (2026-09-20)
 
@@ -938,19 +940,25 @@ How D5's noise control became code, and the choices D5 left open:
 
 ### How the recorded rows were taken (read before comparing rows)
 
-- All nine rows were measured on 2026-10-07, on the Apple M1 Pro of D5, on AC power, from a
-  clean tree, 10 runs of 20 `run()` calls each (the Provenance table in the README).
-- **Three invocations of `bench.py`, not one.** Each results file records when it was taken,
-  and the committed files come from three different times: `01_tree`; `02_stack` to `06_super`
-  with `09_jit`; and `07_ic` with `08_fold`, re-measured after two earlier runs had flagged
-  noise. Interleaving
+- Rows `01_tree` to `08_fold` were measured on 2026-10-07 and row `09_jit` on 2026-10-08, all on
+  the Apple M1 Pro of D5, on AC power, from a clean tree, 10 runs of 20 `run()` calls each (the
+  Provenance table in the README).
+- **Four invocations of `bench.py`, not one.** Each results file records when it was taken,
+  and the committed files come from four different times: `01_tree`; `02_stack` to `06_super`;
+  `07_ic` with `08_fold`, re-measured after two earlier runs had flagged noise; and `09_jit`,
+  re-measured on 2026-10-08 together with the background-compilation pair `jit_sync` and
+  `jit_background` (§5, Engine 4, "Re-measured"). Interleaving
   (§5, the measurement pipeline) only protects comparisons inside one invocation, so three
   marginal ratios compare rows from different invocations: `02_stack` against `01_tree`,
-  `07_ic` against `06_super`, and `09_jit` against `08_fold`. Every cumulative ratio compares
-  against `01_tree`, which was measured on its own.
-- **Two commits, one source.** Rows `07_ic` and `08_fold` record commit `0d05a706c5`, the others
-  `e618db54a8`. `0d05a706c5` is an interim commit of the earlier results files on top of
-  `e618db54a8`; it changes only `README.md` and `results/`, so every row ran the same source.
+  `07_ic` against `06_super`, and `09_jit` against `08_fold` (also a different day). Every
+  cumulative ratio compares against `01_tree`, which was measured on its own.
+- **Three commits, two sources.** Rows `07_ic` and `08_fold` record commit `0d05a706c5`, row
+  `09_jit` `12d2c10368`, the others `e618db54a8`. `0d05a706c5` is an interim commit of the
+  earlier results files on top of `e618db54a8`; it changes only `README.md` and `results/`, so
+  rows 01 to 08 ran the same source. `12d2c10368` is the background-compilation commit (issue
+  #27): it changes the JIT's source as well (`src/jit/`, the JIT's hooks in `src/vm_reg.cpp`, the
+  atomic `jit_entry`), so row `09_jit` against `08_fold` compares different sources as well as
+  different invocations.
 - **Instruction counts.** `docs/instruction_counts.txt` (written by
   `scripts/instruction_counts.py`, and checked by the `instruction-counts` ctest in the `debug`
   build) has how many instructions each VM dispatches per benchmark. They are counts, not times,
@@ -1267,7 +1275,7 @@ How D5's noise control became code, and the choices D5 left open:
   than a stack one, as the wider decode predicted; how much more is not measured. Spec §5.5's
   "largest single win of the ladder" holds among rungs 3a to 4 for `sieve`, `nbody` and
   `closures`, but not for `fib` (inline caching gains more, 1.46×) or `loop_sum` (the JIT,
-  3.12×); leaving the tree-walker (row 02) is larger than any of them.
+  3.22×); leaving the tree-walker (row 02) is larger than any of them.
 - **`strcat` is the control.** It dispatches 0.34 as many instructions and gains 1.03×, so
   dispatch was never a meaningful part of its time, consistent with the stack VM entry.
 - **Caveat.** The row below this one is the NaN-boxed stack VM, which regressed (rung 3b), and
@@ -1520,7 +1528,9 @@ How D5's noise control became code, and the choices D5 left open:
     slower than every `06_super` run. The direction (slower with `--inline-cache`) looks real;
     its size is not known.
   - `09_jit`, which runs the same dispatch loop with the inline cache before `loop_sum`'s `run`
-    is compiled, has a first call that varies from 30,989,875 to 43,628,083 ns across runs.
+    is compiled, has a first call that varied from 30,989,875 to 43,628,083 ns across runs as
+    first recorded, and from 30,835,958 to 38,966,208 ns when re-measured (Engine 4). The
+    background-compilation pair shows the same grouping of first calls (Engine 5, "Measured").
 
   What is known about the cause: `--inline-cache` makes the VM run a separately compiled copy of
   its dispatch loop (`execute_loop<true, ...>` instead of `<false, ...>`, so that the row below
@@ -1685,26 +1695,65 @@ How D5's noise control became code, and the choices D5 left open:
   One function in the whole suite compiles. In the other five benchmarks every function that
   gets hot is rejected, so the `09_jit` row runs them in the register VM; the README marks those
   cells with `‡`. The compiled function never bailed out (`--stats`: 0 bail-outs).
-- **Measured** (row `09_jit` over `08_fold`; different invocations, so not interleaved):
+- **Measured** (row `09_jit` as re-measured on 2026-10-08, see "Re-measured" below, over
+  `08_fold` from 2026-10-07; different invocations, days and commits, so not interleaved):
 
   | | fib | loop_sum | sieve | nbody | strcat | closures |
   |---|---|---|---|---|---|---|
-  | `09_jit` over `08_fold` | 0.99× ▼ ‡ | 3.12× | 0.98× ▼ ‡ | 0.99× ▼ ‡ | 1.01× ‡ | 1.00× ▼ ‡ |
-  | `09_jit` over `01_tree` | 8.31× ‡ | 21.92× | 16.46× ‡ | 6.89× ‡ | 1.35× ‡ | 5.25× ‡ |
-  | JIT time per process, median of 10 runs | 2.5 µs ‡ | 17.7 µs | 2.6 µs ‡ | 5.1 µs ‡ | 5.2 µs ‡ | 5.9 µs ‡ |
+  | `09_jit` over `08_fold` | 1.00× ▼ ‡ | 3.22× | 0.98× ▼ ‡ | 0.99× ▼ ‡ | 1.01× ‡ | 1.00× ▼ ‡ |
+  | `09_jit` over `01_tree` | 8.33× ‡ | 22.64× | 16.53× ‡ | 6.88× ‡ | 1.35× ‡ | 5.25× ‡ |
+  | JIT time per process, median of 10 runs | 2.5 µs ‡ | 16.4 µs | 2.9 µs ‡ | 5.2 µs ‡ | 2.6 µs ‡ | 6.3 µs ‡ |
 
   The last line is the README's compile-time table: `jit_compile_ns`, the total time one process
   spent in `Jit::compile`, rejected functions included (the whitelist check runs inside the same
-  timer). For `loop_sum` it is 0.0065% of the median total time of the 20 timed calls.
-- **`loop_sum`: where the 3.12× comes from, call by call.** Each run is a fresh process and
-  calls `run()` 20 times. `run` becomes hot through its loop's back-edges early in the first
-  call and is compiled then, on the main thread; without on-stack replacement that call finishes
-  in the VM, and machine code runs from the second call on. The per-call times in the results
-  file show exactly that, in every run: the first call took 30,989,875 to 43,628,083 ns, the
-  other 19 took 11,842,791 to 12,554,959 ns. So the p50 (12.30 ms) is a compiled call and the
-  p99 (43.32 ms, the same as `08_fold`'s p99 to two decimals) is an interpreted first call. The
-  3.12× compares medians of totals that each include one interpreted call; for a compiled call
-  alone, compare the p50s: 42.55 ms for `08_fold`, 12.30 ms for `09_jit`.
+  timer). For `loop_sum` it is 0.0062% of the median total time of the 20 timed calls.
+- **Re-measured, and why.** Row `09_jit` was first recorded on 2026-10-07 at commit
+  `e618db54a8` (the `results/09_jit.json` committed in `04e96e6`). Background compilation (issue
+  #27, commit `12d2c10368`) then made `jit_entry` a `std::atomic`, so every call in `--engine=jit`
+  now does an acquire load (`ldapr`) where it did a plain load (`ldr`), background thread or not
+  (D8, "Cost in synchronous mode"). The row was re-measured at `12d2c10368`, in the same
+  `bench.py` invocation as `jit_sync` and `jit_background` (Engine 5), and the table above is the
+  re-measured row. Median total time of the 20 timed calls, first recording against
+  re-measure:
+
+  | | fib | loop_sum | sieve | nbody | strcat | closures |
+  |---|---|---|---|---|---|---|
+  | first recording (ns) | 275,149,957 | 272,949,332.5 | 334,446,958 | 663,369,624.5 | 2,740,716,939.5 | 917,861,583 |
+  | re-measured (ns) | 274,670,020.5 | 264,306,959 | 333,120,455.5 | 664,691,542.5 | 2,733,530,522.5 | 918,024,063 |
+  | re-measured / first | 0.9983 | 0.9683 | 0.9960 | 1.0020 | 0.9974 | 1.0002 |
+
+  The cumulative ratios moved by at most 0.07 except `loop_sum`'s (21.92× to 22.64×), the
+  marginal ones by at most 0.10 (`loop_sum`, 3.12× to 3.22×), and `fib`'s marginal ratio went
+  from 0.99× to 1.00×.
+
+  What the data shows: no slowdown. The re-measured row is slower than the first recording on two
+  benchmarks, by 0.20% (`nbody`) and 0.02% (`closures`), and faster on the other four. The acquire
+  load runs on every call of every function, compiled or not (`jit_frame_entry`), so `closures` and
+  `fib`, which make the most calls (900,002 and 635,622 in one `run()` with the top level,
+  `docs/instruction_counts.txt`) and compile nothing, are where a cost would show most: `closures`
+  is 0.02% slower and `fib` 0.17% faster. What it cannot show: a cost smaller than the difference
+  between two invocations. The two recordings are different invocations on different days, not
+  interleaved, and different commits: `12d2c10368` changes more than the load (the `background()`
+  test in `jit_count`, and `ExecBuffer::write` copying code a word at a time, D8), so a difference
+  of a few tenths of a percent cannot be attributed to any one change. For scale, `09_jit` and
+  `jit_sync` have identical arguments and were measured in the same invocation, and their median
+  totals differ by up to 0.20% (`nbody`). `loop_sum`'s 3.2% is its first call (below), not the load:
+  the load runs 20 times per process there, and the compiled calls' p50 went from 12.30 ms to 12.25
+  ms.
+- **`loop_sum`: where the 3.22× comes from, call by call.** Each run is a fresh process and calls
+  `run()` 20 times. `run` becomes hot through its loop's back-edges early in the first call and is
+  compiled then, on the main thread; without on-stack replacement that call finishes in the VM, and
+  machine code runs from the second call on. The per-call times in the results file show exactly
+  that, in every run: the first call took 30,835,958 to 38,966,208 ns, the other 19 took 11,885,833
+  to 12,523,042 ns. So the p50 (12.25 ms) is a compiled call and the p99 (37.84 ms) is a first call,
+  which runs in the VM. The 3.22× compares medians of totals that each include one such call; for a
+  compiled call alone, compare the p50s: 42.55 ms for `08_fold`, 12.25 ms for `09_jit`. The first
+  call's time varies between processes in groups (around 31 ms in six runs, 37.7 to 39.0 ms in
+  four), and every one of them is shorter than `08_fold`'s p50, although no machine code runs in it.
+  It is the same kind of per-process grouping that rung 3e found in `07_ic` and `08_fold`, and like
+  that one it is not explained. In the first recording the first call took 30,989,875 to 43,628,083
+  ns and the p99 was 43.32 ms, which is why `loop_sum`'s median total moved most between the two
+  recordings.
 - **`fib` and the other four: unchanged, slightly below 1.00×.** As expected for `fib` (D7) and,
   now that the log shows nothing compiles, for the other four. The 1% to 2% losses (`sieve`
   0.98×) are within what a comparison across invocations can resolve. A hypothesis for a real
@@ -1714,25 +1763,28 @@ How D5's noise control became code, and the choices D5 left open:
   and `--engine=jit` runs a third instantiation of the dispatch loop (`execute_loop<true, true>`),
   with the same layout caveat as rung 3e.
 - **Expected versus measured.** Expected a large gain on `loop_sum` and none on `fib`; measured
-  3.12× and 0.99×. Not foreseen: that `loop_sum` would be the only benchmark compiled at all.
-  The whitelist's exclusions (globals, which include every native such as `array` and `len`;
-  float and string constants; closures and captured variables) cover at least one hot function
-  of every other benchmark. Widening it (D7's direct self-recursion; reading a global through
-  the inline cache's cell, rung 3e; float constants) is how the JIT would reach more of the
-  suite; which, if any, is the owner's decision.
+  3.22× and 1.00× ▼ (re-measured; first recorded as 3.12× and 0.99× ▼). Not foreseen: that
+  `loop_sum` would be the only benchmark compiled at all. The whitelist's exclusions (globals, which
+  include every native such as `array` and `len`; float and string constants; closures and captured
+  variables) cover at least one hot function of every other benchmark. Widening it (D7's direct
+  self-recursion; reading a global through the inline cache's cell, rung 3e; float constants) is how
+  the JIT would reach more of the suite; which, if any, is the owner's decision.
 - **Compile times, per function, for D8 step 1.** From the results file's per-run
   `jit_compile_ns`, using the log above to say which functions each figure covers (one process
-  per run, ten runs):
+  per run, ten runs; the re-measured row, and in the last column the first recording):
 
-  | Benchmark | Functions decided in one process | JIT time per process (10 runs) |
-  |---|---|---|
-  | `loop_sum` | `run` compiled | 15,042 to 22,041 ns, median 17,687.5 |
-  | `fib` | `fib` rejected | 1,834 to 5,375 ns, median 2,458 |
-  | `sieve` | `run` rejected | 1,708 to 5,959 ns, median 2,646 |
-  | `strcat` | `run` rejected | 2,042 to 8,791 ns, median 5,187 |
-  | `nbody` | `root`, `advance`, `run` rejected | 2,333 to 7,583 ns, median 5,145.5 |
-  | `closures` | `run`, `make_adder`, `add`, `next` rejected | 5,084 to 10,085 ns, median 5,896 |
+  | Benchmark | Functions decided in one process | JIT time per process (10 runs) | First recording |
+  |---|---|---|---|
+  | `loop_sum` | `run` compiled | 13,000 to 20,750 ns, median 16,437.5 | 15,042 to 22,041 ns, median 17,687.5 |
+  | `fib` | `fib` rejected | 2,167 to 5,208 ns, median 2,500 | 1,834 to 5,375 ns, median 2,458 |
+  | `sieve` | `run` rejected | 2,625 to 6,667 ns, median 2,937.5 | 1,708 to 5,959 ns, median 2,646 |
+  | `strcat` | `run` rejected | 2,208 to 5,416 ns, median 2,563 | 2,042 to 8,791 ns, median 5,187 |
+  | `nbody` | `root`, `advance`, `run` rejected | 2,708 to 7,583 ns, median 5,208 | 2,333 to 7,583 ns, median 5,145.5 |
+  | `closures` | `run`, `make_adder`, `add`, `next` rejected | 3,959 to 8,874 ns, median 6,313.5 | 5,084 to 10,085 ns, median 5,896 |
+  | `warmup` | 64 functions compiled, all in the 4th call (`bench/warmup.rg`, Engine 5) | 488,293 to 536,171 ns, median 519,338.5 | not measured then |
 
+  The ranges of the two recordings overlap on every benchmark; `strcat`'s median halved, from
+  5,187 to 2,563 ns, inside an overlapping range, so the median alone says little at this size.
   `loop_sum`'s figure is the compile time of one function, `run`, because nothing else is
   decided in that process. The `--jit-log` line also prints a compile time, but from a single
   process outside a `bench.py` session, so it is not quoted here (CLAUDE.md: performance figures
@@ -1740,17 +1792,19 @@ How D5's noise control became code, and the choices D5 left open:
   (within the first five here), yet costs microseconds; the timer also covers building the
   rejection message (a `std::string`), and a hypothesis, not measured, is that this and cold
   caches are most of it. The compile landed in the first timed call of every run (above).
-- **What this means for D8 (background compilation).** D8 warned that a JIT this small might
-  compile in well under a millisecond, too fast for a background thread to remove a visible
-  pause. The data says so for this suite: the one compile takes 15,042 to 22,041 ns, inside a
-  first call of at least 30,989,875 ns, and the tail that does exist in `loop_sum` (its p99) is
-  the first call running in the interpreter, which a background compiler would not shorten
-  (the code would still arrive during the first call and be entered on the second). Following
-  D8's order of work, building the background thread should come with the warm-up benchmark D8
-  step 2 describes (many distinct hot functions, short iterations), and if that also shows no
-  measurable tail effect, the result is reported as exactly that (D8 step 3). Whether to go
-  ahead on that basis is the owner's decision. On-stack replacement would remove the
-  interpreted first call, but it is outside D8 and not planned.
+  `warmup`'s 64 compiles average 8.1 µs each (the median per process divided by 64).
+- **What this means for D8 (background compilation).** Written from the first recording, before
+  Engine 5 was built; Engine 5's entry has what was then measured. D8 warned that a JIT this small
+  might compile in well under a millisecond, too fast for a background thread to remove a visible
+  pause. The data says so for this suite: the one compile takes 15,042 to 22,041 ns, inside a first
+  call of at least 30,989,875 ns, and the tail that does exist in `loop_sum` (its p99) is the first
+  call running in the interpreter, which a background compiler would not shorten (the code would
+  still arrive during the first call and be entered on the second). Following D8's order of work,
+  building the background thread should come with the warm-up benchmark D8 step 2 describes (many
+  distinct hot functions, short iterations), and if that also shows no measurable tail effect, the
+  result is reported as exactly that (D8 step 3). Whether to go ahead on that basis is the owner's
+  decision. On-stack replacement would remove the interpreted first call, but it is outside D8 and
+  not planned.
 
 ### Engine 5: background compilation
 
@@ -1771,11 +1825,105 @@ How D5's noise control became code, and the choices D5 left open:
   the interpreter. Whether the net effect on the slowest calls (p99, max) is a gain, a loss or
   nothing visible depends on how long a compile takes against how long the interpreter runs
   while waiting for it, which is exactly what has not been measured.
-- **Measured.** Not yet: the measurement needs the development machine to itself (D5) and is
-  the owner's to run (`python3 scripts/bench.py --configs jit_sync jit_background`, then
-  `python3 scripts/ladder.py`). This entry is completed from `results/jit_sync.json` and
-  `results/jit_background.json` once they exist, and if they show no measurable tail effect it
-  says exactly that (D8 step 3).
+- **Measured.** `jit_sync` (row 09's arguments) and `jit_background` (the same plus
+  `--jit-background`) were measured on 2026-10-08 at commit `12d2c10368`, together with row
+  `09_jit`, in one `bench.py` invocation, so the three are interleaved (D5) and comparable call
+  for call; 10 runs of 20 calls of `run()` each, every run a fresh process. Time of one call in
+  ms (the README's "Background compilation" table; p50, p99 and max are nearest-rank over the
+  200 calls pooled, so the p99 is the third-slowest call and the max the slowest):
+
+  | Benchmark | `jit_sync` p50 | p99 | max | `jit_background` p50 | p99 | max |
+  |---|---|---|---|---|---|---|
+  | `fib` ‡ | 13.72 | 14.09 | 15.23 | 13.74 | 14.11 | 16.91 |
+  | `loop_sum` | 12.26 | 31.71 | 39.07 | 12.24 | 43.15 | 43.21 |
+  | `sieve` ‡ | 16.65 | 17.18 | 17.28 | 16.64 | 17.11 | 17.16 |
+  | `nbody` ‡ | 33.29 | 33.90 | 34.34 | 33.24 | 33.64 | 33.70 |
+  | `strcat` ‡ | 136.47 | 138.60 | 147.10 | 136.56 | 143.03 | 159.57 |
+  | `closures` ‡ | 45.90 | 47.39 | 47.74 | 45.91 | 47.49 | 47.59 |
+  | `warmup` | 0.09 | 0.82 | 0.83 | 0.09 | 0.32 | 0.35 |
+
+- **`warmup`: a measurable tail effect, in the direction background compilation is for.** p99
+  0.82 ms synchronously, 0.32 ms in the background; max 0.83 ms and 0.35 ms; p50 0.09 ms both.
+  Call by call, from the per-call times in the two results files (ranges over all ten runs):
+
+  | Call of `run()` | `jit_sync` (ns) | `jit_background` (ns) |
+  |---|---|---|
+  | 1 to 3 (interpreted) | 254,333 to 369,000 | 254,209 to 272,958 |
+  | 4 (all 64 functions reach the threshold) | 787,291 to 831,708 | 271,625 to 350,000 |
+  | 5 | 95,042 to 109,875 | 188,791 to 216,167 |
+  | 6 | 90,417 to 97,708 | 98,541 to 115,708 |
+  | 7 to 20 | 87,750 to 205,083 | 87,792 to 114,250 |
+
+  Synchronously, call 4 pays for the 64 compiles on the engine's thread: the JIT time per
+  process is 504,584 to 548,584 ns (median 524,397), about what call 4 takes beyond calls 1 to
+  3. In the background, call 4 only queues the 64 functions and stays in the VM, and every
+  background call 4 (at most 350,000 ns) was faster than every synchronous one (at least
+  787,291 ns), in all ten runs: the two do not overlap, so this is not noise. The price is that
+  the code arrives later. The compiler thread spends 474,039 to 559,585 ns per process (median
+  521,523.5) on the same 64 compiles, more than call 4 lasts, and it starts no earlier than call
+  4 and compiles one function at a time, so some functions are still waiting when call 5 starts
+  and run in the VM: call 5 takes about twice as long as synchronously, and call 6 a little
+  longer. The compile work is the same on either thread (medians 524,397 and 521,523.5 ns); it
+  only moves. Over the 20 calls the background is ahead: median total per process 3,017,478.5
+  ns synchronously, 2,610,395 ns in the background (0.865×), because the extra interpreting in
+  calls 5 and 6 costs less than the compiles that left call 4.
+
+  Two details the data shows but does not explain. Background call 4 (271,625 to 350,000 ns) is
+  slower than calls 1 to 3 (254,209 to 272,958 ns), and it is still the slowest call of every run,
+  so it is what the background's p99 and max are. A hypothesis, not measured: the 64 enqueues (each
+  takes the queue's mutex and signals the condition variable, which can wake the compiler thread
+  through the kernel), and the compiler thread running at the same time as the engine's thread (on
+  this chip, the cores of one cluster share a level-2 cache). And background call 6 is slower than
+  synchronous call 6; a hypothesis, not measured: it is the first call that runs the last functions'
+  code, which pays for entering new code once (the `ISB` in `Jit::adopt`, a cold instruction cache),
+  as synchronous call 5 does.
+- **The six ladder benchmarks: no tail gain.** The p50s differ by at most 0.09 ms (`strcat`, 0.07%).
+  On the five `‡` benchmarks nothing is compiled, so the compiler thread has only rejections to do
+  (microseconds, Engine 4), and the p99 and max go both ways: higher in the background for `fib`,
+  `strcat` and `closures`' p99, lower for `sieve`, `nbody` and `closures`' max. The largest
+  differences are `strcat`'s (p99 138.60 against 143.03 ms, max 147.10 against 159.57 ms). These
+  figures are single calls, and the slow ones are not where the JIT works: in `strcat` and `fib` the
+  hot function is rejected during the first call, while the background's three slowest `strcat`
+  calls are calls 5, 7 and 20, and its slowest `fib` call is call 18. For scale, `09_jit` and
+  `jit_sync` run identical arguments in the same invocation, and their `strcat` maxima are 202.88 ms
+  and 147.10 ms. So the differences on these five are within the spread of two identical
+  configurations: no effect measured, in either direction.
+- **`loop_sum`: the background's slowest calls were slower, and the compile is not why.** p50
+  12.26 ms and 12.24 ms, but p99 31.71 ms against 43.15 ms and max 39.07 ms against 43.21 ms,
+  and the median total per process is 264,492,208.5 ns against 275,402,978.5 ns (1.041×). All of
+  it is the first call: calls 2 to 20 took 11,937,375 to 12,677,709 ns synchronously and
+  11,922,625 to 13,252,625 ns in the background. The first call runs in the VM in both modes (the
+  function is compiled during it, and there is no on-stack replacement), and the background
+  compile happens on the other thread (16,333 to 23,333 ns per process there), so compiling in
+  the background cannot shorten or lengthen that call by doing the compile. What differs is which
+  group the first call falls in, the per-process grouping of rung 3e and Engine 4. Synchronously,
+  8 of the 10 first calls took 31,076,125 to 31,709,625 ns, the others 36,968,042 and
+  39,073,417; in the background, 8 took 42,587,000 to 43,206,708 ns, the others 36,466,458 and
+  36,990,958. The slow group matches `08_fold`'s interpreted calls (p50 42.55 ms). With ten
+  processes per configuration, the data cannot say whether `--jit-background` makes the slow
+  group more likely or the runs fell that way. A hypothesis, not measured: rung 3e suspects that
+  where a process's data lands decides its group, and the compiler thread, created at start-up,
+  changes that (its stack, its allocations). Deciding it needs `loop_sum` run in many fresh
+  processes with and without `--jit-background`, a measurement for the owner.
+- **Result (D8 step 3).** On `bench/warmup.rg`, the benchmark built to make a compile pause
+  visible (64 distinct functions, all compiled in the same short call), compiling in the
+  background takes the pause off the engine's thread: its slowest calls are less than half as
+  long (p99 0.82 to 0.32 ms, max 0.83 to 0.35 ms) and the total per process is lower, at the
+  cost of slower 5th and 6th calls. On the six ladder benchmarks there is no tail gain: five
+  compile nothing, and `loop_sum`'s one compile is too short to matter inside a first call that
+  is interpreted either way; its worse tail in the background is not explained and cannot come
+  from the compile itself. What this cannot show: that the effect matters outside a benchmark
+  constructed for it (the pause it removes is about half a millisecond per process, once, here
+  64 compiles of small functions); anything about another machine (one M1 Pro, D5); or effects
+  smaller than the spread of a few slow calls among 200, which is what a p99 or a max is. The
+  concurrency engineering (D8's handoff, TSan-checked in CI) stands on its own and does not
+  depend on these numbers.
+- **Expected versus measured.** On the six ladder benchmarks no change beyond noise was
+  expected: it held for every p50 and for the p99 and max of the five benchmarks that compile
+  nothing; `loop_sum`'s first-call grouping was not foreseen. On `warmup` the outcome was left
+  open; measured, a gain on p99, max and total. The cost the expectation named, code arriving
+  later and so more time in the interpreter, showed up in calls 5 and 6 rather than call 4 (which
+  got much shorter), and it was smaller than the compiles moved off the engine's thread.
 
 ### JIT crashes and their causes
 

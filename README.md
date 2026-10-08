@@ -24,8 +24,11 @@ differ is in [`docs/notes.md`](docs/notes.md) §5.
 
 > **Status: under construction.** The tree-walking interpreter, the stack VM, the register VM
 > and the baseline JIT (arm64 only) run Rung programs and pass the conformance suite, and the
-> JIT can compile on a background thread (`--jit-background`); what that does to per-call
-> latency has not been measured yet. Every number in this README comes from a committed
+> JIT can compile on a background thread (`--jit-background`). Its effect on per-call latency
+> is measured (the background-compilation table below, notes §5, Engine 5): on the warm-up
+> benchmark, built so that 64 functions compile in one short call, it moves the compile pause
+> off the engine's thread and the slowest calls get shorter; on the six ladder benchmarks it
+> brings no tail gain. Every number in this README comes from a committed
 > file in `results/` through `scripts/ladder.py`, which writes the summary above and the tables
 > below. None are hand-written.
 
