@@ -268,10 +268,8 @@ by the owner; the details below are the implementer's and open to review.
   time spent off the engine's thread, not a pause.
 - **Cost in synchronous mode.** `jit_entry` is atomic in both modes, so `--engine=jit` without
   `--jit-background` now does an acquire load before each call where it did a plain load (in the
-  `release-goto-nanbox` binary, an `ldapr` instead of an `ldr`). Row `09_jit` was first measured
-  before this change and was re-measured after it (2026-10-08, commit `12d2c10368`); the data
-  shows no slowdown, but cannot isolate a cost smaller than the difference between two
-  invocations (§5, Engine 4, "Re-measured").
+  `release-goto-nanbox` binary, an `ldapr` instead of an `ldr`). Row `09_jit` was measured before
+  this change and has not been re-measured; whether this moves it is not known.
 - **CI.** The `tsan` preset has no JIT (it is not NaN-boxed), so a `tsan-goto-nanbox` preset was
   added, and its CI jobs (macOS arm64 and Linux arm64) run the unit tests and the whole
   conformance suite with `--engine=jit --jit-background --jit-threshold=1`, alone, with
@@ -283,7 +281,7 @@ by the owner; the details below are the implementer's and open to review.
   are not ladder rows (D4 fixes the ladder at nine): `jit_sync` (row 09's arguments) and
   `jit_background` (the same plus `--jit-background`), measured together over every benchmark so
   the comparison is interleaved. `ladder.py` shows their p50, p99 and max per call in a separate
-  table. The result is in §5, Engine 5 ("Measured").
+  table. The result goes in §5, Engine 5.
 
 ### D9. Lexical rules. `DECIDED` (2026-09-20)
 
@@ -1707,14 +1705,16 @@ How D5's noise control became code, and the choices D5 left open:
   The last line is the README's compile-time table: `jit_compile_ns`, the total time one process
   spent in `Jit::compile`, rejected functions included (the whitelist check runs inside the same
   timer). For `loop_sum` it is 0.0062% of the median total time of the 20 timed calls.
-- **Re-measured, and why.** Row `09_jit` was first recorded on 2026-10-07 at commit
-  `e618db54a8` (the `results/09_jit.json` committed in `04e96e6`). Background compilation (issue
-  #27, commit `12d2c10368`) then made `jit_entry` a `std::atomic`, so every call in `--engine=jit`
-  now does an acquire load (`ldapr`) where it did a plain load (`ldr`), background thread or not
-  (D8, "Cost in synchronous mode"). The row was re-measured at `12d2c10368`, in the same
-  `bench.py` invocation as `jit_sync` and `jit_background` (Engine 5), and the table above is the
-  re-measured row. Median total time of the 20 timed calls, first recording against
-  re-measure:
+- **Re-measured, and why.** Row `09_jit` was first recorded on 2026-10-07 at commit `e618db54a8`
+  (the `results/09_jit.json` committed in `04e96e6`). Background compilation (issue #27, commit
+  `12d2c10368`) then made `jit_entry` a `std::atomic`, so every call in `--engine=jit` now does an
+  acquire load (`ldapr`) where it did a plain load (`ldr`), background thread or not (D8, "Cost in
+  synchronous mode"). That D8 bullet, written before this measurement, says row `09_jit` "has not
+  been re-measured"; it has been since, as this entry describes, and the background-compilation
+  result D8 step 3 asks for is in Engine 5, "Measured" (D8 is `DECIDED` and is left as written). The
+  row was re-measured at `12d2c10368`, in the same `bench.py` invocation as `jit_sync` and
+  `jit_background` (Engine 5), and the table above is the re-measured row. Median total time of the
+  20 timed calls, first recording against re-measure:
 
   | | fib | loop_sum | sieve | nbody | strcat | closures |
   |---|---|---|---|---|---|---|
