@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs ladder configurations over the benchmarks and writes results/<config id>.json.
 
-This is the only way a performance number gets into the repository (CLAUDE.md honesty rules):
+This is the only way a performance number gets into the repository (notes §5):
 scripts/ladder.py turns the files written here into the README table. Run it only on the
 development Mac, plugged in, Low Power Mode off, other apps closed, machine untouched (notes D5).
 
