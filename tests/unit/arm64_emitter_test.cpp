@@ -197,6 +197,10 @@ TEST_CASE("arm64: every instruction matches the assembler, word for word") {
     CASE("asr x0, x1, #1", asr(X0, X1, 1));
     CASE("asr x30, x29, #63", asr(X30, X29, 63));
     CASE("asr x2, xzr, #32", asr(X2, XZR, 32));
+    CASE("sxtw x0, w1", sxtw(X0, W1));
+    CASE("sxtw x30, w29", sxtw(X30, W29));
+    CASE("sxtw x11, w10", sxtw(X11, W10));
+    CASE("sxtw x0, wzr", sxtw(X0, WZR));
 
     // ---- move wide
     CASE("movz w0, #0", movz(W0, 0));
@@ -254,6 +258,23 @@ TEST_CASE("arm64: every instruction matches the assembler, word for word") {
     CASE("str x0, [x1, #32760]", str(X0, X1, 32760));
     CASE("str x0, [sp, #16]", str(X0, SP, 16));
     CASE("str xzr, [sp, #32760]", str(XZR, SP, 32760));
+
+    // ---- load byte (unscaled unsigned offset), and register offsets scaled by the access size
+    CASE("ldrb w0, [x1]", ldrb(W0, X1));
+    CASE("ldrb w0, [x1, #1]", ldrb(W0, X1, 1));
+    CASE("ldrb w0, [x1, #4095]", ldrb(W0, X1, 4095));
+    CASE("ldrb w30, [sp, #8]", ldrb(W30, SP, 8));
+    CASE("ldrb wzr, [x0]", ldrb(WZR, X0));
+    CASE("ldr x0, [x1, x2, lsl #3]", ldr_scaled(X0, X1, X2));
+    CASE("ldr x30, [sp, x29, lsl #3]", ldr_scaled(X30, SP, X29));
+    CASE("ldr xzr, [x0, xzr, lsl #3]", ldr_scaled(XZR, X0, XZR));
+    CASE("ldr w0, [x1, x2, lsl #2]", ldr_scaled(W0, X1, X2));
+    CASE("ldr w30, [sp, x29, lsl #2]", ldr_scaled(W30, SP, X29));
+    CASE("str x0, [x1, x2, lsl #3]", str_scaled(X0, X1, X2));
+    CASE("str x30, [sp, x29, lsl #3]", str_scaled(X30, SP, X29));
+    CASE("str xzr, [x0, xzr, lsl #3]", str_scaled(XZR, X0, XZR));
+    CASE("str w0, [x1, x2, lsl #2]", str_scaled(W0, X1, X2));
+    CASE("str w30, [sp, x29, lsl #2]", str_scaled(W30, SP, X29));
 
     // ---- pair load/store with writeback (extreme offsets, sp base)
     CASE("ldp x29, x30, [sp], #16", ldp_post(X29, X30, SP, 16));
@@ -436,6 +457,7 @@ TEST_CASE("arm64: out-of-range immediates and offsets are hard errors") {
     CHECK_THROWS_AS(e.ldr(X0, X1, 4), EmitError);       // not a multiple of 8
     CHECK_THROWS_AS(e.ldr(W0, X1, 16384), EmitError);   // 4096 accesses
     CHECK_THROWS_AS(e.ldr(X0, X1, 32768), EmitError);
+    CHECK_THROWS_AS(e.ldrb(W0, X1, 4096), EmitError);
     CHECK_THROWS_AS(e.ldp_post(X0, X1, SP, 512), EmitError);
     CHECK_THROWS_AS(e.ldp_post(X0, X1, SP, -520), EmitError);
     CHECK_THROWS_AS(e.stp_pre(W0, W1, SP, 256), EmitError);
@@ -459,6 +481,9 @@ TEST_CASE("arm64: sp and the zero register are not interchangeable") {
     CHECK_THROWS_AS(e.add_imm(XZR, X0, 1), EmitError);
     CHECK_THROWS_AS(e.subs_imm(SP, X0, 1), EmitError);  // subs writes the zero register
     CHECK_THROWS_AS(e.ldr(X0, XZR, 0), EmitError);
+    CHECK_THROWS_AS(e.ldrb(W0, XZR, 0), EmitError);
+    CHECK_THROWS_AS(e.ldr_scaled(X0, XZR, X1), EmitError);  // base slot 31 is sp
+    CHECK_THROWS_AS(e.str_scaled(X0, X1, SP), EmitError);   // index slot 31 is the zero register
     CHECK_THROWS_AS(e.br(SP), EmitError);
     CHECK(e.code().empty());
 }

@@ -1,7 +1,13 @@
 #include "jit/jit_compiler.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 #include "runtime/object.h"
 #include "runtime/value.h"
@@ -27,7 +33,57 @@ const char* constant_problem(Value v, bool operand_of_int_op) {
     return operand_of_int_op ? "has a nil or bool constant as an arithmetic operand" : nullptr;
 }
 
+// Finds the begin and end pointers of a real ObjArray's std::vector by looking for their values
+// in the object's bytes. libc++ and libstdc++ both keep three pointers (begin, end, capacity),
+// but nothing in the standard promises that, and a debug or hardened library could add fields.
+// So the layout is checked, not assumed: each pointer must occur exactly once (capacity is made
+// larger than the size so end and capacity differ), at an 8-byte aligned offset an LDR reaches.
+ArrayLayout probe_array_layout() {
+    static_assert(sizeof(ObjKind) == 1, "the code reads the kind with one LDRB");
+    static_assert(std::is_standard_layout_v<Obj>, "offsetof(Obj, kind) must be well defined");
+    std::vector<Value> elements;
+    elements.reserve(4);
+    elements.resize(2, make_nil());
+    const ObjArray array(std::move(elements));  // never linked into a Heap
+    ArrayLayout layout;
+    if (array.elements.capacity() == array.elements.size()) return layout;
+
+    const Obj* header = &array;  // the address a NaN box holds (make_obj)
+    const std::ptrdiff_t vector_at = reinterpret_cast<const unsigned char*>(&array.elements) -
+                                     reinterpret_cast<const unsigned char*>(header);
+    constexpr std::size_t kWords = sizeof(array.elements) / sizeof(std::uintptr_t);
+    std::uintptr_t words[kWords];
+    std::memcpy(words, &array.elements, sizeof words);
+    const auto find = [&](const Value* pointer) -> std::optional<std::ptrdiff_t> {
+        std::optional<std::ptrdiff_t> found;
+        for (std::size_t i = 0; i < kWords; ++i) {
+            if (words[i] != reinterpret_cast<std::uintptr_t>(pointer)) continue;
+            if (found) return std::nullopt;  // ambiguous
+            found = vector_at + static_cast<std::ptrdiff_t>(i * sizeof(std::uintptr_t));
+        }
+        return found;
+    };
+    const std::optional<std::ptrdiff_t> begin = find(array.elements.data());
+    const std::optional<std::ptrdiff_t> end = find(array.elements.data() + array.elements.size());
+    // LDR's unsigned offset: a multiple of 8, at most 4095 * 8.
+    const auto reachable = [](std::optional<std::ptrdiff_t> at) {
+        return at && *at >= 0 && *at % 8 == 0 && *at <= 4095 * 8;
+    };
+    if (!reachable(begin) || !reachable(end)) return layout;
+    layout.usable = true;
+    layout.kind = static_cast<std::uint32_t>(offsetof(Obj, kind));
+    layout.begin = static_cast<std::uint32_t>(*begin);
+    layout.end = static_cast<std::uint32_t>(*end);
+    return layout;
+}
+
 }  // namespace
+
+const ArrayLayout& array_layout() {
+    // Initialised once, thread-safely: the background compiler thread may be first (notes D8).
+    static const ArrayLayout layout = probe_array_layout();
+    return layout;
+}
 
 // A superinstruction (--superinstructions, ladder rung 3d) is only the first half of a pair: its
 // word is that instruction with the opcode byte changed, and the next word is the second half,
@@ -120,11 +176,24 @@ std::optional<Rejection> check_whitelist(const RegChunk& chunk) {
             case RegOp::Print:
                 problem = "prints";
                 break;
-            case RegOp::Array:
-            case RegOp::ArrayAppend:
             case RegOp::IndexGet:
             case RegOp::IndexSet:
-                problem = "uses an array";
+                // Any operand shape compiles: an array operand that is a constant, or an index
+                // constant that is not an int, is always an error, which the code leaves to the
+                // VM. Float and string constants are rejected as everywhere else.
+                if (!array_layout().usable) {
+                    problem = "uses an array, and this C++ library's std::vector layout is not "
+                              "one the JIT reads";
+                    break;
+                }
+                problem = rk_problem(insn_b(insn), kFlagBConst, false);
+                if (problem == nullptr) problem = rk_problem(insn_c(insn), kFlagCConst, false);
+                break;
+            case RegOp::Array:
+            case RegOp::ArrayAppend:
+                // Creating an array allocates, and nothing in the whitelist may ("Arrays and
+                // the garbage collector", below).
+                problem = "creates an array";
                 break;
             case RegOp::LtJumpIfFalse:
             case RegOp::LeJumpIfFalse:
@@ -154,7 +223,10 @@ std::optional<Rejection> check_whitelist(const RegChunk& chunk) {
 //             The VM's register r is the 8-byte NaN-boxed value at [x0 + r*8].
 //   x1..x4    constants set up on entry (below). x1..x7 are argument registers, which the
 //             callee may overwrite freely.
+//   x5        a fifth constant, the object tag, set up on entry only in a function that reads
+//             or writes an array element (issue #26).
 //   x9..x12   scratch. x9..x15 are "temporary" registers, also free for the callee.
+//   x13..x15  scratch for an array access: the array's address, its element 0, its length.
 //   x16, x17  not used (the linker may use them between a call and its target).
 //   x18       never touched: Apple reserves it for the platform.
 //   x19..x28  callee-saved; not used, so nothing needs saving.
@@ -178,6 +250,24 @@ std::optional<Rejection> check_whitelist(const RegChunk& chunk) {
 // `1 / 0` raises `division by zero` from the VM with the VM's message and line (notes §2.4).
 // RETURN and RETURN_NIL also just return their own index: the VM executes the return itself
 // (closing upvalues, popping the frame), so the JIT never needs to know how frames work.
+//
+// Arrays and the garbage collector (issue #26). An array access holds raw pointers in machine
+// registers: the array object's address and the address of its element 0. The invariant that
+// makes that safe: **no raw heap pointer stays in a machine register past the end of the
+// bytecode instruction that loaded it, and nothing in the whitelist can allocate.** Each
+// INDEX_GET / INDEX_SET loads the array from its frame register, then its element pointers, and
+// uses them at once; the next instruction starts again from the frame. Machine code calls
+// nothing, so between its entry and its `ret` nothing else runs on the engine's thread: no
+// allocation, so no collection (the collector only runs inside an allocation, notes D10), and no
+// VM code, so the element storage cannot be reallocated (only ARRAY_APPEND resizes it, and it is
+// not in the whitelist). The array stays alive because a frame register refers to it and the
+// collector marks every frame register (RegisterEngine::mark_roots), and it never moves: the
+// collector is mark-sweep, which frees objects but never relocates one. A store needs no write
+// barrier for the same reason: the collector is stop-the-world and not generational, so a
+// pointer written into an array between collections is simply found by the next mark. A moving,
+// incremental or generational collector would break these assumptions, and this code would
+// have to change with it. The background compiler thread (notes D8) only generates code; the
+// code runs on the engine's thread, so the arrays it touches are never shared between threads.
 
 namespace {
 
@@ -190,10 +280,15 @@ constexpr XReg kIntTag = X1;                  // nanbox::kIntTag: OR it in to bo
 constexpr WReg kIntTagHigh = W2;              // kIntTag >> 32: the high word an int must have
 constexpr XReg kFalseBits = X3;               // nanbox::kFalse; OR in 1 for true
 constexpr XReg kNilBits = X4;                 // nanbox::kNil
+constexpr XReg kObjTag = X5;                  // nanbox::kObjTag; set up only if arrays are used
 constexpr XReg kB = X9;                       // operand B (an int in the low 32 bits)
 constexpr XReg kC = X10;                      // operand C
 constexpr XReg kTmp = X11;                    // scratch for guards and `%`
 constexpr XReg kResult = X12;                 // the result before it is boxed
+constexpr XReg kIndex = X10;                  // an array index, sign-extended (operand B or C)
+constexpr XReg kArray = X13;                  // the array's address (its Obj*)
+constexpr XReg kElements = X14;               // the address of its element 0
+constexpr XReg kLength = X15;                 // its length, in elements
 
 constexpr WReg w(XReg x) { return static_cast<WReg>(static_cast<std::uint8_t>(x)); }
 
@@ -217,6 +312,7 @@ public:
         e_.mov_imm(kIntTagHigh, static_cast<std::uint32_t>(nanbox::kIntTag >> 32));
         e_.mov_imm(kFalseBits, nanbox::kFalse);
         e_.mov_imm(kNilBits, nanbox::kNil);
+        if (uses_arrays()) e_.mov_imm(kObjTag, nanbox::kObjTag);  // one MOVZ as well
         for (std::size_t i = 0; i < chunk_.code.size(); ++i) {
             e_.bind(labels_[i]);
             out.starts.push_back(e_.code().size());
@@ -234,6 +330,14 @@ public:
     }
 
 private:
+    bool uses_arrays() const {
+        for (Instruction insn : chunk_.code) {
+            const RegOp op = unfused_op(insn);
+            if (op == RegOp::IndexGet || op == RegOp::IndexSet) return true;
+        }
+        return false;
+    }
+
     // `mov w0, #index; ret`: back to the VM, which resumes at bytecode instruction `index`.
     void exit_with(std::size_t index) {
         e_.mov_imm(W0, static_cast<std::uint32_t>(index));
@@ -299,6 +403,56 @@ private:
         e_.b_cond(Cond::EQ, target);
         e_.cmp(value, kNilBits);
         e_.b_cond(Cond::EQ, target);
+    }
+
+    // Puts the array in register `field` into kArray, or bails out at `index` if it is not an
+    // array. An object's NaN box is kObjTag | address (notes D15), so XOR-ing the tag out leaves
+    // the address with a zero top 16 bits, and anything that is not an object leaves some of
+    // them set. Then the header's kind byte must say Array: a string or a function is an object
+    // too. Returns false if the operand is a constant: no constant is an array, so the
+    // instruction is an unconditional exit and the VM raises `can only index arrays`.
+    bool array_operand(std::size_t index, std::uint32_t field, bool is_constant) {
+        if (is_constant) {
+            e_.b(exit_label(index));
+            return false;
+        }
+        e_.ldr(kArray, kBase, slot_offset(field));
+        e_.eor(kArray, kArray, kObjTag);
+        e_.lsr(kTmp, kArray, 48);
+        e_.cbnz(kTmp, exit_label(index));               // not an object
+        e_.ldrb(w(kTmp), kArray, array_layout().kind);
+        e_.cmp_imm(w(kTmp), static_cast<std::uint32_t>(ObjKind::Array));
+        e_.b_cond(Cond::NE, exit_label(index));       // an object, but not an array
+        return true;
+    }
+
+    // Puts the index from RK `field` into kIndex, the array's element 0 into kElements and its
+    // length into kLength, and bails out at `index` unless the index is an int with
+    // 0 <= index < length. Returns false if that is known to fail already (a constant that is
+    // not an int, or a negative one): the instruction is then an unconditional exit.
+    bool element_index(std::size_t index, std::uint32_t field, bool is_constant) {
+        if (is_constant) {
+            const Value k = chunk_.constants[field];
+            if (!is_int(k) || as_int(k) < 0) {
+                e_.b(exit_label(index));
+                return false;
+            }
+            // A W write zeroes the high half, so kIndex holds the non-negative index as 64 bits.
+            e_.mov_imm(w(kIndex), static_cast<std::uint32_t>(as_int(k)));
+        } else {
+            int_operand(index, field, false, kIndex);  // type guard: the index is an int
+            e_.sxtw(kIndex, w(kIndex));                // so -1 becomes 0xFFFF'FFFF'FFFF'FFFF
+        }
+        // The length comes from the vector's two pointers, reloaded for every access.
+        e_.ldr(kElements, kArray, array_layout().begin);
+        e_.ldr(kLength, kArray, array_layout().end);
+        e_.sub(kLength, kLength, kElements);
+        e_.lsr(kLength, kLength, 3);                   // bytes to 8-byte elements
+        // One unsigned compare checks both ends: a negative index, sign-extended, is larger than
+        // any length when read as unsigned, so `index >= length` (B.HS) catches it too.
+        e_.cmp(kIndex, kLength);
+        e_.b_cond(Cond::HS, exit_label(index));
+        return true;
     }
 
     Label jump_target(std::size_t index, Instruction insn) {
@@ -394,6 +548,32 @@ private:
                 e_.bind(fall_through);
                 return;
             }
+
+            // R[A] = RK(B)[RK(C)]. Every check comes before the one write, to register A, so a
+            // failed one leaves the frame as it was and the VM raises the exact error (§2.5).
+            case RegOp::IndexGet:
+                if (!array_operand(i, insn_b(insn), (insn_flags(insn) & kFlagBConst) != 0)) {
+                    return;
+                }
+                if (!element_index(i, insn_c(insn), (insn_flags(insn) & kFlagCConst) != 0)) {
+                    return;
+                }
+                e_.ldr_scaled(kResult, kElements, kIndex);  // any value: no guard
+                e_.str(kResult, kBase, slot_offset(insn_a(insn)));
+                return;
+            // R[A][RK(B)] = RK(C). The one write is to the element itself, after every check.
+            case RegOp::IndexSet:
+                if (!array_operand(i, insn_a(insn), false)) return;
+                if (!element_index(i, insn_b(insn), (insn_flags(insn) & kFlagBConst) != 0)) {
+                    return;
+                }
+                if ((insn_flags(insn) & kFlagCConst) != 0) {
+                    e_.mov_imm(kResult, value_bits(chunk_.constants[insn_c(insn)]));
+                } else {
+                    e_.ldr(kResult, kBase, slot_offset(insn_c(insn)));
+                }
+                e_.str_scaled(kResult, kElements, kIndex);
+                return;
 
             case RegOp::Return:
             case RegOp::ReturnNil:
