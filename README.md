@@ -34,7 +34,7 @@ measured. Two stretch goals were meant to let the JIT compile more of the suite.
 self-recursion (so `fib` could compile, notes D7) is not built. Array reads and writes in
 machine code are built (issue #26), but `sieve` still does not compile: its hot function also
 creates its array by calling the native `array`, a global and a call that the whitelist keeps
-out (notes D16, "Addendum, issue #26").
+out (notes §5, "JIT stretch: array get/set").
 
 ## Results
 
