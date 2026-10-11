@@ -283,55 +283,11 @@ print, error messages and exit codes) are in [`docs/notes.md`](docs/notes.md), �
 
 ## What surprised me
 
-<!-- DRAFT: written by the implementer from docs/notes.md section 5 and the results files.
-     The owner rewrites this section in their own voice before issue #28 is closed. -->
+I expected NaN-boxing to help, especially on `sieve`, where smaller values should make the large array cheaper to work with. It did cut values from 16 bytes to 8, and total heap allocation per process (20 calls) fell from about 192 MB to 96 MB (`results/03_goto.json` and `results/04_nanbox.json`). But every benchmark got slower. `sieve` had the biggest loss, at 0.63× the speed of the previous row. I don't know why yet: more expensive type checks, changes to the compiled dispatch loop, and a workload that wasn't limited by memory are all possible explanations, but none has been tested. Superinstructions gave me another result I hadn't expected: `strcat` dispatched 36.5% fewer instructions with almost no change in time. That suggests the string runtime is where most of its time goes, although I haven't confirmed that with a profile. Inline caching went the other way: `fib` gained 1.46×, more than I expected (`results/06_super.json` and `results/07_ic.json`; these two rows were measured in separate `bench.py` runs, so the ratio is not an interleaved comparison).
 
-> **DRAFT: the owner rewrites this in their own voice.** The paragraphs below are a neutral
-> summary of what the data shows, taken from [`docs/notes.md`](docs/notes.md) §5.
+The JIT result needs some context. The 22.64× speedup over the tree-walker is for `loop_sum`, the only one of the six benchmarks where a function actually compiles. The others hit unsupported operations and keep running in the register VM. Even on `loop_sum`, the first call finishes in the interpreter because there is no on-stack replacement. Comparing the median call times gives a clearer view of the compiled calls: 42.55 ms before the JIT and 12.25 ms after (`results/08_fold.json` and `results/09_jit.json`, from separate runs). Compilation itself took about 16 µs, so moving it to another thread didn't produce a measurable tail-latency gain on the main suite. On `warmup`, a separate benchmark built to make 64 functions become hot together, background compilation reduced p99 from 0.82 ms to 0.32 ms (`results/jit_sync.json` and `results/jit_background.json`). Some later calls were slower because the code wasn't ready yet. I can point to a benefit on that test, but I can't generalize it to the whole suite. `loop_sum` also has an unresolved oddity: interpreted calls fall into distinct speed groups across processes, and its background tail was worse in this measurement. I don't have an explanation for that yet.
 
-NaN-boxing was expected to help most where the most memory is touched: it halves every value
-from 16 bytes to 8, and `sieve` walks an array of 600,001 of them. The memory side did what was
-predicted (the `heap` counters in `results/03_goto.json` and `results/04_nanbox.json`: `sieve`
-allocates 192,002,178 bytes per process with tagged values and 96,002,018 NaN-boxed). The time
-went the other way on all six benchmarks, and worst on `sieve`, the largest loss of any rung in
-the ladder. The two rows were measured interleaved and no cell is noisy, so it is not noise;
-why it happened was not measured, and notes §5 (rung 3b) lists three untested explanations:
-costlier type checks, a differently compiled dispatch loop, and a suite that was never waiting
-on memory. Two other rungs missed their prediction as well. Superinstructions cut `strcat`'s
-dispatches by 36.5% and left its time unchanged, the clearest sign in the ladder that its time
-is spent in the shared string runtime rather than in any interpreter. Inline caching went the
-other way: a large gain on `fib` was called surprising beforehand, and it is the largest gain
-any rung after the register VM gives `fib`.
-
-The JIT compiles one function in the whole benchmark suite, `loop_sum`'s `run`. Every hot function in the
-other five uses something the whitelist excludes: a global (which covers every call of a named
-function, so all recursion, and the natives `array` and `len`), a float or string constant, a
-closure or a captured variable. So the top of the JIT row's range is a single benchmark, and
-even there the ratio mixes two things: without on-stack replacement the first of the 20 calls
-in each process finishes in the interpreter, so `loop_sum`'s p99 is that interpreted call and
-the gain for a compiled call alone is the change in p50 (42.55 ms in `results/08_fold.json`,
-12.25 ms in `results/09_jit.json`). Compiling `run` took a median of 16.4 µs per process, far
-too short to show up as a pause in a call that lasts tens of milliseconds. That is why the
-background-compilation measurement needed its own warm-up benchmark: on the six ladder
-benchmarks a second thread has nothing to remove, and only on `bench/warmup.rg`, where 64
-compiles land in one short call, did the slowest calls get shorter. The tail measurement also
-turned up something that is still unexplained: whenever `loop_sum`'s loop is interpreted with
-the inline cache on (every call in rows `07_ic` and `08_fold`, the first call in `09_jit` and in
-the background pair), its speed falls into one of a few distinct groups that depends on the
-process, and nothing measured so far says why.
-
-The JIT never crashed while it was being built: its unit tests and the conformance suite passed
-under AddressSanitizer and UndefinedBehaviorSanitizer from their first run. The one crash near
-it was not in generated code at all. On Linux arm64, in the sanitizer build only, calling
-freshly written code crashed intermittently. The instruction cache was the first suspect and was
-ruled out; the cause was UBSan's function-type check, which reads the 8 bytes in front of the
-target of every call through a function pointer, and with the code at the very start of a fresh
-memory mapping that read could fall on an unmapped page. Sixteen zero bytes in front of the
-code fixed it. A single test run usually passed, so it was pinned down by running the test
-hundreds of times in a loop in CI. Background compilation added no crash either, but it showed
-a blind spot in ThreadSanitizer: on macOS it did not report a deliberately broken handoff
-between the compiler thread and the engine while the code was copied with `memcpy`, and did once
-the copy became plain 4-byte stores (notes D8).
+I thought generated machine code would be the most likely place for a crash. The baseline JIT tests passed from their first run; the intermittent crash around executable memory came from a sanitizer check on Linux ARM64. Before an indirect call, UBSan reads the eight bytes before the function's address. When the code started at the beginning of a mapped page, that read could reach unmapped memory. Leaving 16 zero bytes before the code fixed it. About 5% of runs crashed, so a single run usually passed; the cause was found by looping the test 300 to 600 times in CI (notes §5). The background compiler exposed a different problem with testing: on macOS, ThreadSanitizer missed a deliberately broken handoff while code was copied with `memcpy`. Plain four-byte stores, together with a C++ read of the code before execution, made the broken handoff detectable. That made me more careful about treating a clean sanitizer run as evidence: it matters whether the sanitizer can see the accesses being checked.
 
 ## How to reproduce
 
