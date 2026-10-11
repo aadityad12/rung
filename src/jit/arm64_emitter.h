@@ -126,6 +126,9 @@ public:
     template <GpReg R> void asr(R d, R n, unsigned amount) {
         shift_imm_(Shift::Asr, is64<R>, d, n, amount);
     }
+    // Sign-extend the low 32 bits of n into all of d (SBFM d, n, #0, #31): a negative int stays
+    // negative as a 64-bit number, so one unsigned compare can reject it as an index.
+    void sxtw(XReg d, WReg n);
 
     // ---- moves ------------------------------------------------------------------------------
     // imm16 is 0..65535; shift is 0/16 (W) or 0/16/32/48 (X).
@@ -155,6 +158,16 @@ public:
     }
     template <GpReg R> void str(R rt, XReg base, uint32_t byte_offset = 0) {
         ldr_str_(false, is64<R>, rt, base, byte_offset);
+    }
+    // One byte, zero-extended, at an unsigned offset of 0..4095 bytes (an object's kind field).
+    void ldrb(WReg rt, XReg base, uint32_t byte_offset = 0);
+    // Register offset scaled by the access size: `ldr x, [base, index, lsl #3]` (`lsl #2` for W),
+    // i.e. element `index` of an array of 8-byte (4-byte) values at `base`. base may be SP.
+    template <GpReg R> void ldr_scaled(R rt, XReg base, XReg index) {
+        ldr_str_scaled_(true, is64<R>, rt, base, index);
+    }
+    template <GpReg R> void str_scaled(R rt, XReg base, XReg index) {
+        ldr_str_scaled_(false, is64<R>, rt, base, index);
     }
     // Pair load/store with base-register writeback, for prologues and epilogues. The offset is
     // a multiple of the register size in -64*size .. 63*size. Post-index uses the base then
@@ -239,6 +252,7 @@ private:
     void shift_imm_(Shift op, bool sf, unsigned d, unsigned n, unsigned amount);
     void wide_(Wide op, bool sf, unsigned d, uint32_t imm16, unsigned shift);
     void ldr_str_(bool load, bool sf, unsigned rt, unsigned base, uint32_t byte_offset);
+    void ldr_str_scaled_(bool load, bool sf, unsigned rt, unsigned base, unsigned index);
     void pair_(bool load, Writeback wb, bool sf, unsigned t1, unsigned t2, unsigned base,
                int32_t byte_offset);
     void cbz_(bool nonzero, bool sf, unsigned rt, int64_t byte_offset);

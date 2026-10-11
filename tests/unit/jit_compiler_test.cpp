@@ -2,9 +2,11 @@
 // these run on every platform, with or without the JIT.
 #include <doctest.h>
 
+#include <cstring>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "compiler_reg.h"
@@ -13,6 +15,7 @@
 #include "resolver.h"
 #include "runtime/function.h"
 #include "runtime/heap.h"
+#include "runtime/object.h"
 
 using namespace rung;
 using rung::jit::unfused_op;
@@ -86,9 +89,13 @@ TEST_CASE("jit whitelist: calls, globals, closures, strings, floats, arrays and 
     CHECK(verdict(R"(fn f(a) { return a + "s"; })", "f") == "0: uses a string constant");
     CHECK(verdict(R"(fn f() { return "s"; })", "f") == "0: uses a string constant");
     CHECK(verdict("fn f(a) { print a; }", "f") == "0: prints");
-    CHECK(verdict("fn f(a) { return a[0]; }", "f") == "0: uses an array");
-    CHECK(verdict("fn f(a) { a[0] = 1; }", "f") == "0: uses an array");
-    CHECK(verdict("fn f(a) { return [a]; }", "f") == "1: uses an array");
+    // Creating an array allocates (issue #26: nothing compiled may); so does the native
+    // `array`, which is also a global and a call, so sieve's `run` stays out.
+    CHECK(verdict("fn f(a) { return [a]; }", "f") == "1: creates an array");
+    CHECK(verdict("fn f(n) { return array(n, 0); }", "f") == "0: uses a global variable");
+    CHECK(verdict("fn f(a) { return len(a); }", "f") == "0: uses a global variable");
+    CHECK(verdict("fn f(a) { return a[1.5]; }", "f") == "0: uses a float constant");
+    CHECK(verdict(R"(fn f(a) { a[0] = "s"; })", "f") == "0: uses a string constant");
     CHECK(verdict("fn f(a) { return !a; }", "f") == "0: uses '!', which is not in the whitelist");
     CHECK(verdict("fn f(a) { return a == nil; }", "f") ==
           "0: has a nil or bool constant as an arithmetic operand");
@@ -96,6 +103,47 @@ TEST_CASE("jit whitelist: calls, globals, closures, strings, floats, arrays and 
           "0: creates or closes a closure");
     CHECK(verdict("fn f(a) { fn g() { return a; } return 1; }", "g") ==
           "0: uses a captured variable");
+}
+
+TEST_CASE("jit whitelist: reading and writing array elements compiles (issue #26)") {
+    REQUIRE(jit::array_layout().usable);  // both standard libraries CI uses keep begin and end
+    CHECK(verdict("fn f(a) { return a[0]; }", "f") == "ok");
+    CHECK(verdict("fn f(a, i, v) { a[i] = v; return a[i + 1]; }", "f") == "ok");
+    // nil, bool and int constants as the stored value; any constant as the index or the array:
+    // the code exits to the VM where that is always an error.
+    CHECK(verdict("fn f(a) { a[0] = nil; a[1] = true; a[2] = -3; }", "f") == "ok");
+    CHECK(verdict("fn f(a) { return a[nil] + a[-1] + 5[0]; }", "f") == "ok");
+    // The loops of bench/sieve.rg, with the array passed in instead of created.
+    CHECK(verdict(R"(
+        fn mark(flags, n) {
+            let i = 2;
+            while (i * i <= n) {
+                if (flags[i]) {
+                    let j = i * i;
+                    while (j <= n) { flags[j] = false; j = j + i; }
+                }
+                i = i + 1;
+            }
+            let count = 0;
+            let k = 0;
+            while (k <= n) { if (flags[k]) count = count + 1; k = k + 1; }
+            return count;
+        })", "mark", true) == "ok");
+}
+
+TEST_CASE("jit whitelist: the array layout is found on a real ObjArray") {
+    const jit::ArrayLayout& layout = jit::array_layout();
+    REQUIRE(layout.usable);
+    std::vector<Value> elements = {make_int(1), make_int(2), make_int(3)};
+    ObjArray array(std::move(elements));
+    const auto* at = reinterpret_cast<const unsigned char*>(static_cast<const Obj*>(&array));
+    const Value* begin;
+    const Value* end;
+    std::memcpy(&begin, at + layout.begin, sizeof begin);
+    std::memcpy(&end, at + layout.end, sizeof end);
+    CHECK(begin == array.elements.data());
+    CHECK(end == array.elements.data() + 3);
+    CHECK(at[layout.kind] == static_cast<unsigned char>(ObjKind::Array));
 }
 
 TEST_CASE("jit whitelist: one instruction outside it rejects the whole function") {
@@ -120,8 +168,11 @@ TEST_CASE("jit whitelist: fused superinstructions are judged as their two halves
     CHECK(verdict(loop, "run", true) == "ok");
     // IndexSet + Add fuses; the rejection names the first half, as without fusion.
     const std::string array = "fn f(a, i) { a[i] = 1; return i + 1; }";
-    CHECK(verdict(array, "f", true) == verdict(array, "f", false));
-    CHECK(verdict(array, "f", true) == "0: uses an array");
+    CHECK(verdict(array, "f", true) == "ok");
+    CHECK(verdict(array, "f", false) == "ok");
+    const std::string float_store = "fn f(a, i) { a[i] = 1.5; return i + 1; }";
+    CHECK(verdict(float_store, "f", true) == verdict(float_store, "f", false));
+    CHECK(verdict(float_store, "f", true) == "0: uses a float constant");
     CHECK(unfused_op(make_abc(RegOp::ModAdd, 0, 0, 0)) == RegOp::Mod);
     CHECK(unfused_op(make_abc(RegOp::Add, 0, 0, 0)) == RegOp::Add);
 }
@@ -142,11 +193,12 @@ TEST_CASE("jit codegen: fused code compiles to exactly the machine code of unfus
     // Fusion changes only opcode bytes (register_code.h, "Fusion"), and the JIT reads each word
     // as its unfused instruction, so the words must be identical.
     const std::string source = R"(
-        fn run(n, d) {
+        fn run(n, d, a) {
             let s = 0;
             let i = 0;
             while (i <= n) { s = i % d + s / d; i = i + 1; }
             while (i < n + n) { s = s + i; i = i + 1; }
+            while (i < n * 3) { a[i] = s; i = i + d; }
             return s;
         })";
     ParseResult parsed = parse(source);
@@ -169,7 +221,7 @@ TEST_CASE("jit codegen: fused code compiles to exactly the machine code of unfus
         REQUIRE_FALSE(jit::check_whitelist(fn->reg).has_value());
         words[fuse] = jit::generate(fn->reg).words;
     }
-    CHECK(fused_words >= 4);  // LT and LE + JUMP_IF_FALSE, MOD + ADD, ADD + JUMP
+    CHECK(fused_words >= 5);  // LT and LE + JUMP_IF_FALSE, MOD + ADD, ADD + JUMP, INDEX_SET + ADD
     CHECK(words[0] == words[1]);
 }
 
@@ -193,5 +245,16 @@ TEST_CASE("jit codegen: every bytecode instruction is mapped to its machine code
     // The last two words are the ADD's bail-out: `mov w0, #0; ret`.
     CHECK(code.words[code.words.size() - 2] == 0x52800000u);  // movz w0, #0
     CHECK(code.words.back() == 0xD65F03C0u);                    // ret
+
+    // A function that touches an array sets up a fifth constant, the object tag, first; one
+    // that does not keeps exactly the code it had before arrays were compiled.
+    RegChunk array_chunk;
+    array_chunk.emit(make_abc(RegOp::IndexGet, 2, 0, 1), 1);
+    array_chunk.emit(make_abc(RegOp::Return, 0, 2, 0), 1);
+    array_chunk.frame_size = 3;
+    REQUIRE_FALSE(jit::check_whitelist(array_chunk).has_value());
+    jit::GeneratedCode array_code = jit::generate(array_chunk);
+    CHECK(array_code.starts[0] == 5);
+    CHECK(array_code.words[4] == 0xD2FFFF85u);  // movz x5, #0xfffc, lsl #48
 }
 #endif

@@ -30,11 +30,25 @@ struct Rejection {
 // functions use a few dozen registers (notes D14).
 constexpr int kMaxFrameSize = 4096;
 
+// Where machine code finds an array's elements, as byte offsets from the object's address (the
+// pointer in its NaN box). ObjArray keeps its elements in a std::vector, whose layout the C++
+// standard does not fix, so it is measured once on a real ObjArray (array_layout) instead of
+// assumed. `usable` is false if the vector does not keep plain begin and end pointers that the
+// code can reach with one load each; then every array instruction stays in the VM.
+struct ArrayLayout {
+    bool usable = false;
+    std::uint32_t kind = 0;   // the header's ObjKind byte
+    std::uint32_t begin = 0;  // the elements' first-element pointer
+    std::uint32_t end = 0;    // the one-past-the-last-element pointer
+};
+const ArrayLayout& array_layout();
+
 // Returns nothing if every instruction is one the JIT compiles: int arithmetic (+ - * / %,
-// unary -), the six comparisons, register moves, int / nil / bool constants, jumps and returns.
-// Anything that touches a string, a float constant, an array, a closure or upvalue, a global, a
+// unary -), the six comparisons, register moves, int / nil / bool constants, jumps, returns, and
+// reading or writing one array element (`a[i]`, `a[i] = v`; issue #26, notes D2). Anything that
+// touches a string or float constant, creates an array, uses a closure or upvalue, a global, a
 // call or `print` rejects the whole function (notes D7: `fib` calls itself through a global, so
-// it is rejected).
+// it is rejected; so is `sieve`'s `run`, which calls the global native `array`).
 std::optional<Rejection> check_whitelist(const RegChunk& chunk);
 
 // The opcode a word had before the superinstruction pass: a fused word's first half, else the

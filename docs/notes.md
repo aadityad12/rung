@@ -1925,6 +1925,108 @@ How D5's noise control became code, and the choices D5 left open:
   later and so more time in the interpreter, showed up in calls 5 and 6 rather than call 4 (which
   got much shorter), and it was smaller than the compiles moved off the engine's thread.
 
+### JIT stretch: array get/set (issue #26)
+
+D2 left "array get/set in the JIT" as a stretch goal, decided once the JIT works; the owner's
+issue #26 asks for it, with the guards and the GC rule below. It widens D16's whitelist, whose
+`DECIDED` text is left as written: this entry records the extension as built. The guards and the
+GC rule come from the issue; the rest is the implementer's choice and open to review. Code:
+`src/jit/jit_compiler.cpp` (`array_operand`, `element_index`, the GC comment above `CodeGen`),
+`src/jit/arm64_emitter.h` (`ldrb`, `ldr_scaled`/`str_scaled`, `sxtw`, each checked against the
+LLVM assembler like every other encoding).
+
+- **What changed.** The JIT compiles `INDEX_GET` and `INDEX_SET` (details below), with four
+  guards (an object, an array, an int index, `0 <= index < length`), each bailing out so the VM
+  raises the exact §2.5 error, and no raw pointer held past the instruction that loaded it.
+  `tests/conformance/jit/` gains one test per array error path inside compiled code (not an
+  array: an int, nil, a string, a function, a constant; not an int: a float, a string, a constant
+  `true`; out of range: -1, the length, the smallest and largest int, an empty array, a constant
+  index, and the first half of a fused `INDEX_SET_ADD`), plus element reads of every type in a
+  compiled loop and writes seen through other references. The suite passes with
+  `--jit-threshold=1` alone, with `--gc-stress`, with `--fold`, `--superinstructions` and all
+  rungs, and with `--jit-background`, in `asan-goto-nanbox`, `tsan-goto-nanbox` and
+  `release-goto-nanbox`. `tests/unit/jit_test.cpp` runs the generated code directly on real
+  arrays for every guard, and checks with `--jit-log` that each error comes from a bail-out at
+  the `INDEX_GET` / `INDEX_SET` (or `INDEX_SET_ADD`) and is reported on the `[`'s line.
+- **What compiles.** `INDEX_GET` (`R[A] = RK(B)[RK(C)]`) and `INDEX_SET` (`R[A][RK(B)] = RK(C)`),
+  so also both halves of the fused `INDEX_SET_ADD`. The stored value may be a register or an
+  int, nil or bool constant (float and string constants stay out, as everywhere). `ARRAY` and
+  `ARRAY_APPEND` stay out ("creates an array"): they allocate. So do `array(...)` and `len(...)`:
+  they are globals and calls.
+- **Guards**, each a branch to the instruction's exit, all before the one write:
+  1. *Is it an object?* `eor x13, x, x5` with `x5 = 0xFFFC'0000'0000'0000` (D15's object tag, set
+     up on entry only in functions that index): an object's tag cancels, leaving its address with
+     the top 16 bits zero; `lsr` + `cbnz` exits if any is set.
+  2. *Is it an array?* `ldrb` the header's `kind` byte, `cmp` with `ObjKind::Array`, `b.ne`. A
+     string or a function passes guard 1, so this one is needed.
+  3. *Is the index an int?* The same guard as arithmetic (high word `0x7FFD0000`).
+  4. *Is `0 <= index < length`?* `sxtw` sign-extends the index to 64 bits; the length is
+     `(end - begin) >> 3` from the element storage's two pointers, reloaded for every access; one
+     unsigned compare, `b.hs`, rejects both ends, because a negative index sign-extended is above
+     2^63 as an unsigned number.
+  Any failure returns the instruction's index and the VM executes it, so the VM raises the exact
+  §2.5 message on the line of the `[`: the JIT never decides which error it is. Operands that
+  can never be valid are known when compiling: a constant array operand (`5[0]`) or a constant
+  index that is not an int or is negative compiles to a plain exit; a constant index of 0 or more
+  is moved into the register and still bounds-checked.
+- **Where the element pointers are.** `ObjArray` keeps its elements in a `std::vector`, whose
+  layout the standard does not fix. Rather than assume libc++'s and libstdc++'s three pointers,
+  `jit::array_layout()` finds them once on a real `ObjArray`: it looks for the values of
+  `data()` and `data() + size()` among the vector's bytes (capacity made larger than the size,
+  so the end pointer is unambiguous) and requires each to occur exactly once, 8-byte aligned,
+  within an `LDR`'s reach. If not, every array instruction is rejected with a message saying so
+  and stays in the VM. Rejected alternative: changing `ObjArray` to a pointer and a length the
+  JIT can name. That changes the runtime every engine shares (D10) and so every recorded row's
+  `sieve`, for a JIT-only convenience.
+- **Registers.** `x5` (the object tag) and `x13`-`x15` (the array's address, its element 0, its
+  length) join D16's register table. All are caller-saved, so the code is still a leaf with no
+  prologue.
+- **The GC invariant.** No raw heap pointer stays in a machine register past the end of the
+  bytecode instruction that loaded it, and nothing in the whitelist allocates. Machine code
+  calls nothing, so while it runs nothing else runs on the engine's thread: no allocation, so no
+  collection (D10: the collector only runs inside an allocation), and no VM code, so the element
+  storage is never reallocated under it (only `ARRAY_APPEND` resizes it). The array is alive
+  because a frame register holds it and `mark_roots` marks every frame register, and it does not
+  move because the collector is mark-sweep: it frees objects, it never relocates one. A store
+  needs no write barrier because the collector is stop-the-world and not generational. A moving,
+  incremental or generational collector would invalidate this reasoning. The compiler thread (D8)
+  only generates code; machine code, and so every array access, runs on the engine's thread.
+- **Why `sieve` still does not compile.** Its `run` creates its array with the native `array`:
+  instruction 1 is `GET_GLOBAL array` and instruction 4 the `CALL`; every other instruction is now
+  inside the whitelist. Not changed here, because each way to get past that is outside this
+  issue or against a `DECIDED` entry; the choice is the owner's:
+  1. *Allow a call of a native from machine code.* D16's whitelist and D7 keep globals and
+     calls out (D7 plans only direct self-recursion), D16's calling convention has no
+     prologue because the code calls nothing, and `array` allocates, which breaks the invariant
+     issue #26 prescribes ("nothing in the whitelist allocates").
+  2. *Restructure `bench/sieve.rg`* so its loops are in a function that is given the array, as
+     `tests/conformance/jit/sieve_with_the_array_passed_in.rg` does (that function compiles).
+     `sieve`'s code would then differ from the program rows 01 to 08 measured, so every row's
+     `sieve` would need re-measuring for the ladder to compare like with like.
+  3. *Let the VM run the call and re-enter the machine code after it.* The frame is the same in
+     both (D3), so nothing would need translating, but it is a form of on-stack replacement, and
+     D16's bail-out protocol says the rest of the call runs in the VM.
+- **What compiles in the benchmarks: unchanged.** The issue's goal, `sieve` compiling, is not
+  met. Run with row `09_jit`'s arguments and `--jit-log`, `sieve`'s `run` is still rejected at
+  instruction 1, `GET_GLOBAL` (the native `array`), as Engine 4's table says; the rest of its
+  instructions are now inside the whitelist (the same loops with the array passed in compile:
+  `tests/conformance/jit/sieve_with_the_array_passed_in.rg`). `nbody`'s `advance` is still
+  rejected at instruction 0 (`GET_GLOBAL len`). So `bench/jit_not_compiled.json` and the
+  README's ‡ marks are unchanged, and `bench-jit-coverage` passes as before. "Why `sieve` still
+  does not compile" above lists the three ways past `GET_GLOBAL array` + `CALL`; choosing one is
+  the owner's decision.
+- **Expected effect on row `09_jit`: none on which code runs.** A function with no array
+  instruction gets exactly the machine code it got before (the object tag is set up only in
+  functions that index; a unit test checks the entry sequence), so `loop_sum`'s `run` is still
+  11 bytecode instructions → 76 machine instructions, 304 bytes, and the other five benchmarks
+  still run in the VM. What does change in the binary: the whitelist check now looks at array
+  instructions, and `array_layout()` runs once per process, the first time an array instruction
+  is checked (a few allocations and compares, outside any compiled code). Not measured: the row
+  has not been re-measured for this change. Re-measuring it says something about arrays in
+  machine code only once `sieve` (or another benchmark) compiles an array access.
+- **Measured.** Nothing; no performance figure is claimed for this change.
+- **Expected versus measured.** Not applicable until a benchmark compiles an array access.
+
 ### JIT crashes and their causes
 
 - **Baseline JIT (issue #23): no crash was hit while building it.** The direct tests of the

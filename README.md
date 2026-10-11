@@ -30,9 +30,11 @@ and why they differ is in [`docs/notes.md`](docs/notes.md) §5.
 
 **Status.** All five engines run every Rung program and pass the same conformance suite; the
 JIT exists on arm64 only. All nine ladder rows and the background-compilation pair are
-measured. Two stretch goals that would let the JIT compile more of the suite are not built:
-direct self-recursion (so `fib` could compile, notes D7) and array reads and writes in machine
-code (so `sieve` could).
+measured. Two stretch goals were meant to let the JIT compile more of the suite. Direct
+self-recursion (so `fib` could compile, notes D7) is not built. Array reads and writes in
+machine code are built (issue #26), but `sieve` still does not compile: its hot function also
+creates its array by calling the native `array`, a global and a call that the whitelist keeps
+out (notes §5, "JIT stretch: array get/set").
 
 ## Results
 
