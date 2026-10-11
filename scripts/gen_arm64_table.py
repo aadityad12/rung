@@ -68,6 +68,7 @@ def cases():
     for op in ["lsl", "lsr", "asr"]:
         add(f"{op} w0, w1, #0", f"{op} w0, w1, #1", f"{op} w30, w29, #31",
             f"{op} x0, x1, #0", f"{op} x0, x1, #1", f"{op} x30, x29, #63", f"{op} x2, xzr, #32")
+    add("sxtw x0, w1", "sxtw x30, w29", "sxtw x11, w10", "sxtw x0, wzr")
     # move wide
     add("movz w0, #0", "movz w0, #65535", "movz w0, #1, lsl #16", "movz w30, #65535, lsl #16",
         "movz x0, #0", "movz x0, #65535", "movz x0, #2, lsl #16", "movz x0, #1, lsl #32",
@@ -90,6 +91,14 @@ def cases():
         add(f"{op} w0, [x1]", f"{op} w0, [x1, #4]", f"{op} w0, [x1, #16380]",
             f"{op} w30, [sp]", f"{op} wzr, [x0, #8]", f"{op} x0, [x1]", f"{op} x0, [x1, #8]",
             f"{op} x0, [x1, #32760]", f"{op} x0, [sp, #16]", f"{op} xzr, [sp, #32760]")
+    # load byte, unsigned offset (unscaled: the access size is 1)
+    add("ldrb w0, [x1]", "ldrb w0, [x1, #1]", "ldrb w0, [x1, #4095]", "ldrb w30, [sp, #8]",
+        "ldrb wzr, [x0]")
+    # load/store, register offset scaled by the access size
+    for op in ["ldr", "str"]:
+        add(f"{op} x0, [x1, x2, lsl #3]", f"{op} x30, [sp, x29, lsl #3]",
+            f"{op} xzr, [x0, xzr, lsl #3]", f"{op} w0, [x1, x2, lsl #2]",
+            f"{op} w30, [sp, x29, lsl #2]")
     # pair load/store with writeback
     add("ldp x29, x30, [sp], #16", "ldp x29, x30, [sp], #504", "ldp x29, x30, [sp], #-512",
         "ldp x19, x20, [sp], #32", "ldp w0, w1, [sp], #8", "ldp w0, w1, [x2], #252",

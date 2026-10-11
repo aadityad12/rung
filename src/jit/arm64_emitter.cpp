@@ -148,6 +148,11 @@ void Emitter::shift_imm_(Shift op, bool sf, unsigned d, unsigned n, unsigned amo
     emit(base | immr << 16 | imms << 10 | zr_slot(n) << 5 | zr_slot(d));
 }
 
+void Emitter::sxtw(XReg d, WReg n) {
+    // SBFM Xd, Xn, #0, #31: sf=1 opc=00 100110 N=1 immr=0 imms=31 Rn Rd
+    emit(0x93407C00u | zr_slot(n) << 5 | zr_slot(d));
+}
+
 // ---- moves ----------------------------------------------------------------------------------
 
 void Emitter::wide_(Wide op, bool sf, unsigned d, uint32_t imm16, unsigned shift) {
@@ -201,6 +206,18 @@ void Emitter::ldr_str_(bool load, bool sf, unsigned rt, unsigned base, uint32_t 
     }
     check_range(byte_offset / size, 0, 4095, "load/store offset (in accesses)");
     emit((sf ? 0xF9000000u : 0xB9000000u) | (load ? 1u << 22 : 0u) | byte_offset / size << 10 |
+         sp_slot(base) << 5 | zr_slot(rt));
+}
+
+void Emitter::ldrb(WReg rt, XReg base, uint32_t byte_offset) {
+    // 00 111 0 01 01 imm12 Rn Rt     (LDRB, unsigned offset; the access size is 1, so unscaled)
+    check_range(byte_offset, 0, 4095, "load byte offset");
+    emit(0x39400000u | byte_offset << 10 | sp_slot(base) << 5 | zr_slot(rt));
+}
+
+void Emitter::ldr_str_scaled_(bool load, bool sf, unsigned rt, unsigned base, unsigned index) {
+    // 1x 111 0 00 opc 1 Rm option=011 (LSL) S=1 10 Rn Rt     opc: 00 STR, 01 LDR
+    emit((sf ? 0xF8207800u : 0xB8207800u) | (load ? 1u << 22 : 0u) | zr_slot(index) << 16 |
          sp_slot(base) << 5 | zr_slot(rt));
 }
 

@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "compiler_reg.h"
@@ -382,6 +383,207 @@ TEST_CASE("jit engine: division by zero in machine code is the VM's error, on th
     CHECK(r.result.runtime_error->line == 3);
     CHECK(r.result.runtime_error->message == "division by zero");
     CHECK(count(r.log, "bail-out in d at instruction 0 (DIV, line 3)") == 1);
+}
+
+// ---- array elements (issue #26) --------------------------------------------------------------
+
+namespace {
+
+// `r2 = r0[r1]; return r2`, with the operands' constant flags as given.
+RegChunk index_get(std::uint8_t flags = 0, std::uint32_t b = 0, std::uint32_t c = 1) {
+    RegChunk chunk;
+    chunk.emit(make_abc(RegOp::IndexGet, 2, b, c, flags), 1);
+    chunk.emit(make_abc(RegOp::Return, 0, 2, 0), 1);
+    chunk.frame_size = 3;
+    return chunk;
+}
+
+// `r0[r1] = r2; return nil`.
+RegChunk index_set() {
+    RegChunk chunk;
+    chunk.emit(make_abc(RegOp::IndexSet, 0, 1, 2), 1);
+    chunk.emit(make_abc(RegOp::ReturnNil, 0, 0, 0), 1);
+    chunk.frame_size = 3;
+    return chunk;
+}
+
+}  // namespace
+
+TEST_CASE("jit code: an array element is read and written in machine code") {
+    Heap heap;
+    const Value string = make_obj(heap.intern(std::string_view("s")));
+    Heap::TempRoot root_string(heap, string);
+    ObjArray* array = heap.allocate<ObjArray>(
+        std::vector<Value>{make_int(10), make_float(2.5), string, make_nil()});
+    Heap::TempRoot root(heap, make_obj(array));
+    Compiled get(index_get());
+    for (std::int32_t i = 0; i < 4; ++i) {
+        Ran r = run(get, make_obj(array), make_int(i));
+        CHECK(r.resume == 1);
+        CHECK(value_bits(r.regs[2]) == value_bits(array->elements[static_cast<std::size_t>(i)]));
+    }
+    Compiled set(index_set());
+    std::vector<Value> regs = {make_obj(array), make_int(3), make_bool(true)};
+    CHECK(set.entry(regs.data()) == 1);
+    CHECK(value_bits(array->elements[3]) == value_bits(make_bool(true)));
+    regs[1] = make_int(0);
+    regs[2] = make_obj(array);  // an array may hold itself
+    CHECK(set.entry(regs.data()) == 1);
+    CHECK(value_bits(array->elements[0]) == value_bits(make_obj(array)));
+}
+
+TEST_CASE("jit code: every failed array check bails out before writing anything") {
+    Heap heap;
+    ObjArray* array = heap.allocate<ObjArray>(std::size_t{3}, make_int(7));
+    Heap::TempRoot root(heap, make_obj(array));
+    ObjArray* empty = heap.allocate<ObjArray>(std::size_t{0}, make_nil());
+    Heap::TempRoot root_empty(heap, make_obj(empty));
+    const Value string = make_obj(heap.intern(std::string_view("abc")));
+    // Not an array: other objects (a string has a header too, with another kind) and non-objects.
+    const Value not_arrays[] = {string, make_int(0), make_nil(), make_bool(false), make_float(1.0)};
+    // Not an int, or out of range (the extremes check the sign extension).
+    const Value bad_indices[] = {make_float(0.0), make_nil(), make_bool(true), string,
+                                 make_int(-1), make_int(3), make_int(kMin), make_int(kMax)};
+    Compiled get(index_get());
+    Compiled set(index_set());
+    const auto check_get = [&](Value a, Value i) {
+        Ran r = run(get, a, i);
+        CHECK(r.resume == 0);                // the VM re-runs INDEX_GET and raises the error
+        CHECK(as_int(r.regs[2]) == -12345);  // the destination is untouched
+    };
+    const auto check_set = [&](Value a, Value i) {
+        std::vector<Value> regs = {a, i, make_int(99)};
+        CHECK(set.entry(regs.data()) == 0);
+        for (Value v : array->elements) CHECK(as_int(v) == 7);  // the elements are untouched
+    };
+    for (Value a : not_arrays) {
+        check_get(a, make_int(0));
+        check_set(a, make_int(0));
+    }
+    for (Value i : bad_indices) {
+        check_get(make_obj(array), i);
+        check_set(make_obj(array), i);
+    }
+    check_get(make_obj(empty), make_int(0));
+    check_set(make_obj(empty), make_int(0));
+}
+
+TEST_CASE("jit code: constant operands that can never index are unconditional exits") {
+    Heap heap;
+    ObjArray* array = heap.allocate<ObjArray>(std::size_t{3}, make_int(7));
+    Heap::TempRoot root(heap, make_obj(array));
+    // r2 = r0[k] for a constant k: 2 is read; nil, -1 and 3 exit (3 by the bounds check).
+    for (Value k : {make_int(2), make_nil(), make_int(-1), make_int(3)}) {
+        RegChunk constants;
+        const auto at = static_cast<std::uint32_t>(constants.add_constant(k));
+        RegChunk chunk = index_get(kFlagCConst, 0, at);
+        chunk.constants = constants.constants;
+        Compiled code(chunk);
+        Ran r = run(code, make_obj(array), make_nil());
+        CHECK(r.resume == (value_bits(k) == value_bits(make_int(2)) ? 1u : 0u));
+        if (r.resume == 1) CHECK(as_int(r.regs[2]) == 7);
+    }
+    // A constant array operand (`5[0]`): no constant is an array.
+    RegChunk constants;
+    const auto at = static_cast<std::uint32_t>(constants.add_constant(make_int(5)));
+    RegChunk chunk = index_get(kFlagBConst, at, 1);
+    chunk.constants = constants.constants;
+    Compiled code(chunk);
+    CHECK(run(code, make_nil(), make_int(0)).resume == 0);
+}
+
+TEST_CASE("jit engine: every array error in machine code is the VM's error, on the right line") {
+    struct Case {
+        const char* call;
+        const char* message;
+        int line;
+        const char* bailout;
+    };
+    // g reads on line 2, s writes on line 3; both compile on their first call.
+    const std::string functions =
+        "fn g(a, i) { return a[i]; }\n"
+        "fn s(a, i) {\n  a[i] = 1;\n}\n"
+        "let a = [1, 2, 3];\nprint g(a, 2);\ns(a, 0);\nprint a;\n";
+    const std::string get = "bail-out in g at instruction 0 (INDEX_GET, line 1)";
+    const std::string set = "bail-out in s at instruction 0 (INDEX_SET, line 3)";
+    const Case cases[] = {
+        {"g(5, 0)", "can only index arrays", 1, get.c_str()},
+        {"g(\"abc\", 0)", "can only index arrays", 1, get.c_str()},
+        {"g(a, 1.0)", "array index must be an int", 1, get.c_str()},
+        {"g(a, -1)", "array index out of range", 1, get.c_str()},
+        {"g(a, 3)", "array index out of range", 1, get.c_str()},
+        {"s(nil, 0)", "can only index arrays", 3, set.c_str()},
+        {"s(a, true)", "array index must be an int", 3, set.c_str()},
+        {"s(a, -2147483648)", "array index out of range", 3, set.c_str()},
+        {"s(a, 3)", "array index out of range", 3, set.c_str()},
+    };
+    for (const Case& c : cases) {
+        CAPTURE(c.call);
+        EngineRun r = run_jit(functions + "print " + c.call + ";\n", 1);
+        CHECK(r.output == "3\n[1, 2, 3]\n");
+        CHECK(count(r.log, "[jit] compiled g") == 1);
+        CHECK(count(r.log, "[jit] compiled s") == 1);
+        CHECK(count(r.log, "bail-out") == 1);
+        CHECK(count(r.log, c.bailout) == 1);
+        REQUIRE(r.result.runtime_error.has_value());
+        CHECK(r.result.runtime_error->message == c.message);
+        CHECK(r.result.runtime_error->line == c.line);
+    }
+}
+
+TEST_CASE("jit engine: a fused INDEX_SET + ADD bails out on its first half's line") {
+    const std::string source = R"(fn fill(a, n, step) {
+  let j = 0;
+  while (j <= n) {
+    a[j] = false;
+    j = j + step;
+  }
+  return j;
+}
+let a = array(10, true);
+print fill(a, 9, 3);
+print a;
+print fill(a, 10, 5);
+)";
+    EngineRun r = run_jit(source, 1, false, true);
+    CHECK(r.output == "12\n[false, true, true, false, true, true, false, true, true, false]\n");
+    CHECK(count(r.log, "[jit] compiled fill") == 1);
+    CHECK(count(r.log, "(INDEX_SET_ADD, line 4)") == 1);
+    REQUIRE(r.result.runtime_error.has_value());
+    CHECK(r.result.runtime_error->line == 4);
+    CHECK(r.result.runtime_error->message == "array index out of range");
+}
+
+TEST_CASE("jit engine: sieve's loops compile once the array is passed in") {
+    // bench/sieve.rg with the array created by the caller: `mark` has no global, call or
+    // allocation, so it compiles; `run` calls the native `array` and stays in the VM.
+    const std::string source = R"(
+        fn mark(flags, n) {
+            flags[0] = false;
+            flags[1] = false;
+            let i = 2;
+            while (i * i <= n) {
+                if (flags[i]) {
+                    let j = i * i;
+                    while (j <= n) { flags[j] = false; j = j + i; }
+                }
+                i = i + 1;
+            }
+            let count = 0;
+            let k = 0;
+            while (k <= n) { if (flags[k]) count = count + 1; k = k + 1; }
+            return count;
+        }
+        fn run(n) { return mark(array(n + 1, true), n); }
+        print run(1000);
+        print run(10000);
+    )";
+    EngineRun r = run_jit(source, 1, true, true);
+    CHECK(r.result.ok());
+    CHECK(r.output == "168\n1229\n");  // the number of primes up to 1000 and 10000
+    CHECK(count(r.log, "[jit] compiled mark") == 1);
+    CHECK(count(r.log, "[jit] rejected run: instruction 0 (GET_GLOBAL)") == 1);
+    CHECK(count(r.log, "bail-out") == 0);
 }
 
 // ---- background compilation (Engine 5, notes D8) ---------------------------------------------
