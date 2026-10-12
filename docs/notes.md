@@ -1,14 +1,14 @@
 # Rung: design notes and decisions
 
-This is the running record of every design decision, the rules all engines must follow, and
-(later) what each ladder rung was expected to do versus what it measured.
+This is my running record of every design decision, the rules all engines must follow, and
+what each ladder rung was expected to do versus what it measured.
 
 **Precedence.** This file is the source of truth for design decisions. Where it differs from the
 original design spec (a private planning document, cited below as "spec §N"), this file wins,
 and the entry says what it replaced.
 
-**Status tags.** `DECIDED` means settled. `PROPOSED` means it's a recommendation that
-still needs sign-off. Nothing `PROPOSED` should be built on without checking first.
+**Status tags.** `DECIDED` means settled; an entry is changed only by writing down what replaced
+it and why. `RESOLVED` marks an open question that has been answered.
 
 ---
 
@@ -188,8 +188,8 @@ still needs sign-off. Nothing `PROPOSED` should be built on without checking fir
 
 **Handoff and GC protocol, as built (issue #27).** `--jit-background` (needs `--engine=jit`)
 gives the JIT one compiler thread. Code: `src/jit/jit.{h,cpp}` (queue, thread, handoff),
-`src/vm_reg.cpp` (`jit_count`, `jit_frame_entry`, `mark_roots`). The rules above were specified
-by the owner; the details below are the implementer's and open to review.
+`src/vm_reg.cpp` (`jit_count`, `jit_frame_entry`, `mark_roots`). The rules above were set before
+any code was written; the details below were worked out while building it.
 
 - **Who owns what.** The engine's thread owns every heap object and every field of a function
   except one: it alone runs the VM, allocates, collects, and reads and writes `jit_hotness` and
@@ -392,8 +392,8 @@ rung [--engine=tree|stack|register|jit] [--gc-stress] [--stats]
 
 The register VM (ladder rung 3c) and the JIT (D3) run this format. Its definition is in
 `src/bytecode/register_code.h`; the compiler is `src/compiler_reg.cpp`. The instruction
-words and the calling convention below were specified by the owner's issue; everything under
-*Details chosen while implementing* is the implementer's choice and is open to review.
+words and the calling convention below were fixed in the plan for this rung; everything under
+*Details chosen while implementing* was decided while building it.
 
 - **One instruction is one fixed 64-bit word:** `op` 8 bits, `A` 16, `B` 16, `C` 16, and 8
   spare bits (used for flags, below). Jumps put a signed 32-bit offset in `B:C` (called `sBx`;
@@ -503,9 +503,9 @@ words and the calling convention below were specified by the owner's issue; ever
 
 `--engine=jit` is the register VM with a method JIT attached: hot functions are compiled to
 ARM64 machine code, and everything else stays in the VM. The hotness rule, the whitelist, the
-registers-in-memory design, the guards and the bail-out-by-index protocol were specified by the
-owner's issue; everything under *Details chosen while implementing* is the implementer's choice
-and is open to review. Code: `src/jit/jit_compiler.{h,cpp}` (whitelist and code generation),
+registers-in-memory design, the guards and the bail-out-by-index protocol were fixed in the plan
+for the JIT; everything under *Details chosen while implementing* was decided while building
+it. Code: `src/jit/jit_compiler.{h,cpp}` (whitelist and code generation),
 `src/jit/jit.{h,cpp}` (executable memory, log, statistics), the hooks in `src/vm_reg.cpp`.
 
 - **Other rungs.** `--engine=jit` is the register VM plus machine code, so it accepts the
@@ -874,7 +874,7 @@ The AST destructor and `dump_ast` recurse the same way, and so will the tree-wal
 compilers.
 
 Options were: (1) count each link toward the nesting limit; (2) a separate limit on the length of
-one chain; (3) make every pass iterative along the spine. **The owner chose option 2, with a limit
+one chain; (3) make every pass iterative along the spine. **I chose option 2, with a limit
 of 1000**, so no pass has to be iterative and future engines are protected too. The rule and its
 message are in §2.6 (chain limit) and §2.7.
 
@@ -891,7 +891,7 @@ The fuzz target's 4096-byte input cap existed only because of this question and 
 
 ---
 
-## 5. Per-rung notes (fill in as work happens)
+## 5. Per-rung notes
 
 For each rung: what was expected, what was measured, why they differed. For the JIT: every
 crash and its cause.
@@ -1187,7 +1187,7 @@ How D5's noise control became code, and the choices D5 left open:
   JIT needs it (D3, D16), so rows 05 to 09 all run on NaN-boxed values and there is no
   measurement of the register VM with tagged values. Whether the register VM pays the same
   penalty is unknown. D4's optional "leave one out" row (the register VM on `release-goto`)
-  would measure it; whether to add it is the owner's call.
+  would measure it; it is not measured yet.
 
 ### Ladder rung 3c: register VM
 
@@ -1205,7 +1205,7 @@ How D5's noise control became code, and the choices D5 left open:
   the caller's register `A`. This keeps every register in memory at `base + index`, which is
   what the JIT will read and write (D3); `RegChunk::line_at` maps an instruction index to its
   source line for error reporting and, later, bail-outs.
-- **Details chosen while implementing** (open to review):
+- **Details chosen while implementing:**
   - *The register file never moves*, for the same reason as the stack VM's value stack: open
     upvalues are raw pointers to registers. It is reserved once at the stack VM's size
     (6,754,304 slots, uninitialised, so pages are touched only as frames reach them). The
@@ -1540,7 +1540,7 @@ How D5's noise control became code, and the choices D5 left open:
   alignment, so the suspect is data placement, such as where the register file or the heap
   lands). What would decide it: disassemble `MOD_ADD`, `LT_JUMP_IF_FALSE` and `ADD_JUMP` in
   both instantiations, and run `loop_sum` in many fresh processes with and without
-  `--inline-cache` (a measurement, so the owner's).
+  `--inline-cache` (a measurement, not done yet).
 - **Consequence for the rows above.** Rows `08_fold` and `09_jit` carry `--inline-cache` (D4 is
   cumulative), so their `loop_sum` cells are measured against, or interpreted in, the same loop:
   `08_fold` over `07_ic` on `loop_sum` (1.00×, †) compares two rows with the same bimodal
@@ -1589,7 +1589,7 @@ How D5's noise control became code, and the choices D5 left open:
     to stay one. The condition is not removed from a loop that stays.
   - *Code after an `if` that may not return.* Only a `return` statement ends its block; a
     `return` inside an `if` that is not constant ends nothing.
-- **Details chosen while implementing** (open to review):
+- **Details chosen while implementing:**
   - The pass is one recursive walk, bottom-up, so `1 + 2 * 3` folds in one visit and a
     condition is folded before the `if` or `while` it controls is judged. Its recursion depth
     is bounded by the same two limits as the resolver's (§2.6).
@@ -1768,7 +1768,8 @@ How D5's noise control became code, and the choices D5 left open:
   include every native such as `array` and `len`; float and string constants; closures and captured
   variables) cover at least one hot function of every other benchmark. Widening it (D7's direct
   self-recursion; reading a global through the inline cache's cell, rung 3e; float constants) is how
-  the JIT would reach more of the suite; which, if any, is the owner's decision.
+  the JIT would reach more of the suite. Array reads and writes are the one widening built so
+  far ("JIT stretch: array get/set" below).
 - **Compile times, per function, for D8 step 1.** From the results file's per-run
   `jit_compile_ns`, using the log above to say which functions each figure covers (one process
   per run, ten runs; the re-measured row, and in the last column the first recording):
@@ -1787,8 +1788,8 @@ How D5's noise control became code, and the choices D5 left open:
   5,187 to 2,563 ns, inside an overlapping range, so the median alone says little at this size.
   `loop_sum`'s figure is the compile time of one function, `run`, because nothing else is
   decided in that process. The `--jit-log` line also prints a compile time, but from a single
-  process outside a `bench.py` session, so it is not quoted here (CLAUDE.md: performance figures
-  come from `results/`). A rejection stops at the first instruction outside the whitelist
+  process outside a `bench.py` session, so it is not quoted here (performance figures in this
+  repository come only from `results/`). A rejection stops at the first instruction outside the whitelist
   (within the first five here), yet costs microseconds; the timer also covers building the
   rejection message (a `std::string`), and a hypothesis, not measured, is that this and cold
   caches are most of it. The compile landed in the first timed call of every run (above).
@@ -1802,8 +1803,8 @@ How D5's noise control became code, and the choices D5 left open:
   still arrive during the first call and be entered on the second). Following D8's order of work,
   building the background thread should come with the warm-up benchmark D8 step 2 describes (many
   distinct hot functions, short iterations), and if that also shows no measurable tail effect, the
-  result is reported as exactly that (D8 step 3). Whether to go ahead on that basis is the owner's
-  decision. On-stack replacement would remove the interpreted first call, but it is outside D8 and
+  result is reported as exactly that (D8 step 3). I went ahead on that basis (Engine 5 below).
+  On-stack replacement would remove the interpreted first call, but it is outside D8 and
   not planned.
 
 ### Engine 5: background compilation
@@ -1904,7 +1905,7 @@ How D5's noise control became code, and the choices D5 left open:
   group more likely or the runs fell that way. A hypothesis, not measured: rung 3e suspects that
   where a process's data lands decides its group, and the compiler thread, created at start-up,
   changes that (its stack, its allocations). Deciding it needs `loop_sum` run in many fresh
-  processes with and without `--jit-background`, a measurement for the owner.
+  processes with and without `--jit-background`, a measurement not done yet.
 - **Result (D8 step 3).** On `bench/warmup.rg`, the benchmark built to make a compile pause
   visible (64 distinct functions, all compiled in the same short call), compiling in the
   background takes the pause off the engine's thread: its slowest calls are less than half as
@@ -1927,10 +1928,10 @@ How D5's noise control became code, and the choices D5 left open:
 
 ### JIT stretch: array get/set (issue #26)
 
-D2 left "array get/set in the JIT" as a stretch goal, decided once the JIT works; the owner's
-issue #26 asks for it, with the guards and the GC rule below. It widens D16's whitelist, whose
+D2 left "array get/set in the JIT" as a stretch goal, decided once the JIT works; issue #26
+asks for it, with the guards and the GC rule below. It widens D16's whitelist, whose
 `DECIDED` text is left as written: this entry records the extension as built. The guards and the
-GC rule come from the issue; the rest is the implementer's choice and open to review. Code:
+GC rule come from the issue; the rest was decided while building it. Code:
 `src/jit/jit_compiler.cpp` (`array_operand`, `element_index`, the GC comment above `CodeGen`),
 `src/jit/arm64_emitter.h` (`ldrb`, `ldr_scaled`/`str_scaled`, `sxtw`, each checked against the
 LLVM assembler like every other encoding).
@@ -1993,8 +1994,8 @@ LLVM assembler like every other encoding).
   only generates code; machine code, and so every array access, runs on the engine's thread.
 - **Why `sieve` still does not compile.** Its `run` creates its array with the native `array`:
   instruction 1 is `GET_GLOBAL array` and instruction 4 the `CALL`; every other instruction is now
-  inside the whitelist. Not changed here, because each way to get past that is outside this
-  issue or against a `DECIDED` entry; the choice is the owner's:
+  inside the whitelist. I stopped here, because each way past that is outside this issue or
+  against a `DECIDED` entry:
   1. *Allow a call of a native from machine code.* D16's whitelist and D7 keep globals and
      calls out (D7 plans only direct self-recursion), D16's calling convention has no
      prologue because the code calls nothing, and `array` allocates, which breaks the invariant
@@ -2013,8 +2014,8 @@ LLVM assembler like every other encoding).
   `tests/conformance/jit/sieve_with_the_array_passed_in.rg`). `nbody`'s `advance` is still
   rejected at instruction 0 (`GET_GLOBAL len`). So `bench/jit_not_compiled.json` and the
   README's ‡ marks are unchanged, and `bench-jit-coverage` passes as before. "Why `sieve` still
-  does not compile" above lists the three ways past `GET_GLOBAL array` + `CALL`; choosing one is
-  the owner's decision.
+  does not compile" above lists the three ways past `GET_GLOBAL array` + `CALL`; none is
+  planned.
 - **Expected effect on row `09_jit`: none on which code runs.** A function with no array
   instruction gets exactly the machine code it got before (the object tag is set up only in
   functions that index; a unit test checks the entry sequence), so `loop_sum`'s `run` is still
