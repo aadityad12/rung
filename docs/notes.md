@@ -957,6 +957,13 @@ How D5's noise control became code, and the choices D5 left open:
   #27): it changes the JIT's source as well (`src/jit/`, the JIT's hooks in `src/vm_reg.cpp`, the
   atomic `jit_entry`), so row `09_jit` against `08_fold` compares different sources as well as
   different invocations.
+- **Commit IDs predate a history rewrite.** On 2026-10-11 the repository's history was rewritten
+  to edit commit messages and a few repository configuration files; no source, test, script,
+  benchmark or results file changed. The commit IDs recorded in `results/` and quoted in this file
+  are the IDs from before the rewrite. Old to new: `e618db54a8` is `f7ec06b0e2` (#54),
+  `04e96e6` is `0684fe7829` (#55), `12d2c10368` is `c046c1ca40` (#56), and `b112ded` (the
+  results commit merged in #57) is part of `d94a4193af`. `0d05a706c5` was an interim results
+  commit on a branch that no longer exists; its source is that of `e618db54a8`.
 - **Instruction counts.** `docs/instruction_counts.txt` (written by
   `scripts/instruction_counts.py`, and checked by the `instruction-counts` ctest in the `debug`
   build) has how many instructions each VM dispatches per benchmark. They are counts, not times,
