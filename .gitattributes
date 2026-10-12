@@ -1,0 +1,3 @@
+# Rung source files (.rg) are not the Rouge language GitHub guesses from the extension; keep
+# them out of the language statistics.
+*.rg linguist-detectable=false
