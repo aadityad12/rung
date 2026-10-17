@@ -286,6 +286,13 @@ class LadderTest(unittest.TestCase):
         self.assertIn("No results have been recorded yet", self.readme())
         self.assertEqual(run_main(ladder, ["--check", "--root", self.root])[0], 0)
 
+    def test_power_source_in_plain_words(self):
+        def power(source):
+            return ladder.power_text({"power_source": source})
+        self.assertEqual(power("Now drawing from 'AC Power'"), "AC power")
+        self.assertEqual(power("Now drawing from 'Battery Power'"), "Battery power")
+        self.assertEqual(power("unknown"), "unknown")
+
     def test_tables(self):
         self.fill()
         self.assertEqual(run_main(ladder, ["--root", self.root])[0], 0)

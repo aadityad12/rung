@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="706" viewBox="0 0 960 706" role="img" aria-labelledby="title desc">
+<title id="title">Speedup over the tree-walker across six benchmarks</title>
+<desc id="desc">Stack VM, register VM and JIT configurations. The JIT compiles only loop_sum; outlined bars mean VM fallback. Higher is faster.</desc>
+<rect width="960" height="706" rx="16" fill="#f5f8fc"/>
+<g font-family="system-ui, sans-serif" fill="#172235">
+<text x="30" y="38" font-size="23" font-weight="700">What each engine buys you</text>
+<text x="30" y="65" font-size="14">Speedup over tree-walking · higher is faster · same six programs</text>
+<rect x="30" y="85" width="14" height="14" rx="3" fill="#4e7fa7"/>
+<text x="52" y="97" font-size="14">Stack VM</text>
+<rect x="250" y="85" width="14" height="14" rx="3" fill="#199b96"/>
+<text x="272" y="97" font-size="14">Register VM</text>
+<rect x="470" y="85" width="14" height="14" rx="3" fill="#7966c7"/>
+<text x="492" y="97" font-size="14">JIT configuration</text>
+<text x="690" y="97" font-size="13">Outlined = VM fallback</text>
+<path d="M155.0 128 V626" stroke="#dce4ef"/>
+<text x="155.0" y="122" text-anchor="middle" font-size="12">0×</text>
+<path d="M295.0 128 V626" stroke="#dce4ef"/>
+<text x="295.0" y="122" text-anchor="middle" font-size="12">5×</text>
+<path d="M435.0 128 V626" stroke="#dce4ef"/>
+<text x="435.0" y="122" text-anchor="middle" font-size="12">10×</text>
+<path d="M575.0 128 V626" stroke="#dce4ef"/>
+<text x="575.0" y="122" text-anchor="middle" font-size="12">15×</text>
+<path d="M715.0 128 V626" stroke="#dce4ef"/>
+<text x="715.0" y="122" text-anchor="middle" font-size="12">20×</text>
+<path d="M855.0 128 V626" stroke="#dce4ef"/>
+<text x="855.0" y="122" text-anchor="middle" font-size="12">25×</text>
+<text x="30" y="169" font-size="15" font-weight="600">fib</text>
+<rect x="155" y="135" width="106.36" height="14" rx="3" fill="#4e7fa7" stroke="#4e7fa7"/>
+<text x="268.36" y="147" font-size="12">3.80×</text>
+<rect x="155" y="156" width="159.87" height="14" rx="3" fill="#199b96" stroke="#199b96"/>
+<text x="321.87" y="168" font-size="12">5.71×</text>
+<rect x="155" y="177" width="233.12" height="14" rx="3" fill="#f5f8fc" stroke="#7966c7" stroke-dasharray="4 3"/>
+<text x="395.12" y="189" font-size="12">8.33×</text>
+<text x="30" y="255" font-size="15" font-weight="600">loop_sum</text>
+<rect x="155" y="221" width="106.50" height="14" rx="3" fill="#4e7fa7" stroke="#4e7fa7"/>
+<text x="268.50" y="233" font-size="12">3.80×</text>
+<rect x="155" y="242" width="190.86" height="14" rx="3" fill="#199b96" stroke="#199b96"/>
+<text x="352.86" y="254" font-size="12">6.82×</text>
+<rect x="155" y="263" width="633.82" height="14" rx="3" fill="#7966c7" stroke="#7966c7"/>
+<text x="795.82" y="275" font-size="12">22.64×</text>
+<text x="30" y="341" font-size="15" font-weight="600">sieve</text>
+<rect x="155" y="307" width="139.76" height="14" rx="3" fill="#4e7fa7" stroke="#4e7fa7"/>
+<text x="301.76" y="319" font-size="12">4.99×</text>
+<rect x="155" y="328" width="378.35" height="14" rx="3" fill="#199b96" stroke="#199b96"/>
+<text x="540.35" y="340" font-size="12">13.51×</text>
+<rect x="155" y="349" width="462.74" height="14" rx="3" fill="#f5f8fc" stroke="#7966c7" stroke-dasharray="4 3"/>
+<text x="624.74" y="361" font-size="12">16.53×</text>
+<text x="30" y="427" font-size="15" font-weight="600">nbody</text>
+<rect x="155" y="393" width="131.54" height="14" rx="3" fill="#4e7fa7" stroke="#4e7fa7"/>
+<text x="293.54" y="405" font-size="12">4.70×</text>
+<rect x="155" y="414" width="186.66" height="14" rx="3" fill="#199b96" stroke="#199b96"/>
+<text x="348.66" y="426" font-size="12">6.67×</text>
+<rect x="155" y="435" width="192.58" height="14" rx="3" fill="#f5f8fc" stroke="#7966c7" stroke-dasharray="4 3"/>
+<text x="354.58" y="447" font-size="12">6.88×</text>
+<text x="30" y="513" font-size="15" font-weight="600">strcat</text>
+<rect x="155" y="479" width="36.43" height="14" rx="3" fill="#4e7fa7" stroke="#4e7fa7"/>
+<text x="198.43" y="491" font-size="12">1.30×</text>
+<rect x="155" y="500" width="37.75" height="14" rx="3" fill="#199b96" stroke="#199b96"/>
+<text x="199.75" y="512" font-size="12">1.35×</text>
+<rect x="155" y="521" width="37.91" height="14" rx="3" fill="#f5f8fc" stroke="#7966c7" stroke-dasharray="4 3"/>
+<text x="199.91" y="533" font-size="12">1.35×</text>
+<text x="30" y="599" font-size="15" font-weight="600">closures</text>
+<rect x="155" y="565" width="113.02" height="14" rx="3" fill="#4e7fa7" stroke="#4e7fa7"/>
+<text x="275.02" y="577" font-size="12">4.04×</text>
+<rect x="155" y="586" width="143.05" height="14" rx="3" fill="#199b96" stroke="#199b96"/>
+<text x="305.05" y="598" font-size="12">5.11×</text>
+<rect x="155" y="607" width="147.09" height="14" rx="3" fill="#f5f8fc" stroke="#7966c7" stroke-dasharray="4 3"/>
+<text x="309.09" y="619" font-size="12">5.25×</text>
+<text x="30" y="658" font-size="13">Apple M1 Pro · macOS 26.6.2 · results/*.json</text>
+<text x="30" y="680" font-size="12">Median process total / calls. Sessions differ; see methodology and full tables.</text>
+</g></svg>
