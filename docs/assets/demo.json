@@ -1,0 +1,85 @@
+{
+  "version": "rung 0.1.0\nengines: tree stack register jit",
+  "platform": "Darwin",
+  "architecture": "arm64",
+  "example_sha256": {
+    "hot_loop.rg": "49afcade31ba7fd20614068f795d95854c3982af4f9c339ea2479a6d9eba3d0e",
+    "bytecode.rg": "d56156aa76a9919026fe2a0855a2d8de3f8c12b6718f8c8fe435c23a6b909620",
+    "jit_fallback.rg": "ff87efc29add49f28e202ba771ae32e22036e7d93ffb92970ecdf157c59e5ad3"
+  },
+  "presentation": "Real command output; compiler durations omitted. Playback is paced for reading, not execution time.",
+  "records": [
+    {
+      "section": "engines",
+      "title": "Tree walker",
+      "caption": "One program. Two calls. The same answer.",
+      "command": "rung --engine=tree examples/hot_loop.rg",
+      "stdout": "994657\n994657\n",
+      "stderr": ""
+    },
+    {
+      "section": "engines",
+      "title": "Stack VM",
+      "caption": "One program. Two calls. The same answer.",
+      "command": "rung --engine=stack examples/hot_loop.rg",
+      "stdout": "994657\n994657\n",
+      "stderr": ""
+    },
+    {
+      "section": "engines",
+      "title": "Register VM",
+      "caption": "One program. Two calls. The same answer.",
+      "command": "rung --engine=register examples/hot_loop.rg",
+      "stdout": "994657\n994657\n",
+      "stderr": ""
+    },
+    {
+      "section": "engines",
+      "title": "ARM64 JIT",
+      "caption": "One program. Two calls. The same answer.",
+      "command": "rung --engine=jit examples/hot_loop.rg",
+      "stdout": "994657\n994657\n",
+      "stderr": ""
+    },
+    {
+      "section": "engines",
+      "title": "Background JIT",
+      "caption": "One program. Two calls. The same answer.",
+      "command": "rung --engine=jit --jit-background examples/hot_loop.rg",
+      "stdout": "994657\n994657\n",
+      "stderr": ""
+    },
+    {
+      "section": "bytecode",
+      "title": "Stack bytecode",
+      "caption": "Function excerpt: return a + b;",
+      "command": "rung --engine=stack --dump-bytecode examples/bytecode.rg",
+      "stdout": "== add (arity 2, upvalues 0) ==\n0000    3 GET_LOCAL      1\n0002    3 GET_LOCAL      2\n0004    3 ADD\n0005    3 RETURN\n0006    2 NIL\n0007    2 RETURN\n",
+      "stderr": ""
+    },
+    {
+      "section": "bytecode",
+      "title": "Register bytecode",
+      "caption": "Function excerpt: return a + b;",
+      "command": "rung --engine=register --dump-bytecode examples/bytecode.rg",
+      "stdout": "== add (arity 2, upvalues 0, frame 3) ==\n0000    3 ADD            r2 r0 r1\n0001    3 RETURN         r2\n0002    2 RETURN_NIL\n",
+      "stderr": ""
+    },
+    {
+      "section": "jit",
+      "title": "A hot function becomes machine code",
+      "caption": "Default threshold: first call heats up; second call enters compiled code.",
+      "command": "rung --engine=jit --jit-log examples/hot_loop.rg",
+      "stdout": "994657\n994657\n",
+      "stderr": "[jit] compiled sum: 10 bytecode instructions -> 67 machine instructions (268 bytes)\n"
+    },
+    {
+      "section": "jit",
+      "title": "A float takes the safe path back",
+      "caption": "Threshold 1 for this example: add(20, 22), then add(20, 2.5).",
+      "command": "rung --engine=jit --jit-threshold=1 --jit-log examples/jit_fallback.rg",
+      "stdout": "42\n22.5\n",
+      "stderr": "[jit] compiled add: 3 bytecode instructions -> 21 machine instructions (84 bytes)\n[jit] bail-out in add at instruction 0 (ADD, line 4)\n"
+    }
+  ]
+}

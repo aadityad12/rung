@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(rung LANGUAGES CXX)
+project(rung VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -130,7 +130,29 @@ endif()
 
 find_package(Threads REQUIRED)  # the engine runs on its own big-stack thread (notes D12)
 add_executable(rung src/main.cpp)
+target_compile_definitions(rung PRIVATE RUNG_VERSION="${PROJECT_VERSION}")
 target_link_libraries(rung PRIVATE rung_core rung_warnings Threads::Threads)
+
+include(GNUInstallDirs)
+install(TARGETS rung RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY examples docs DESTINATION ${CMAKE_INSTALL_DATADIR}/rung)
+install(FILES README.md LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/rung)
+install(FILES scripts/demo.py DESTINATION ${CMAKE_INSTALL_DATADIR}/rung/scripts)
+
+set(CPACK_GENERATOR TGZ)
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_VENDOR "Rung")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "A language with interpreters, bytecode VMs and an ARM64 JIT")
+string(TOLOWER "${CMAKE_SYSTEM_NAME}" RUNG_PACKAGE_OS)
+if(APPLE)
+  set(RUNG_PACKAGE_OS macos)
+endif()
+set(RUNG_PACKAGE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+if(RUNG_PACKAGE_ARCH MATCHES "^(arm64|aarch64)$")
+  set(RUNG_PACKAGE_ARCH arm64)
+endif()
+set(CPACK_PACKAGE_FILE_NAME "rung-${PROJECT_VERSION}-${RUNG_PACKAGE_OS}-${RUNG_PACKAGE_ARCH}")
+include(CPack)
 
 # Unit tests (doctest, vendored single header).
 enable_testing()
@@ -185,6 +207,15 @@ endif()
 # The generous per-test timeout is for --gc-stress under the sanitizers.
 #
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+add_test(NAME cli
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/run_cli_check.py
+          --rung $<TARGET_FILE:rung> --version ${PROJECT_VERSION})
+add_test(NAME demo
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/demo.py --rung $<TARGET_FILE:rung>
+          --check-capture ${CMAKE_SOURCE_DIR}/docs/assets/demo.json)
+add_test(NAME results-chart
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/render_results.py --check)
 
 # Under --gc-stress every allocation is a full collection, so a program that keeps N calls
 # active does N collections that each visit about N scopes: the work grows with the square of

@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -58,28 +58,37 @@ struct Options {
     const char* path = nullptr;
 };
 
-void print_usage() {
-    std::cerr << "usage: rung [--engine=";
+void print_usage(std::ostream& out = std::cerr) {
+    out << "usage: rung [--engine=";
     const char* separator = "";
     for (std::string_view name : rung::engine_names()) {
-        std::cerr << separator << name;
+        out << separator << name;
         separator = "|";
     }
-    std::cerr << "] [--gc-stress] [--stats[=pairs]] [--fold] [--inline-cache]\n"
-                 "            [--superinstructions] [--jit-threshold=N] [--jit-log]\n"
-                 "            [--jit-background]\n"
-                 "            [--dump-tokens | --dump-ast | --dump-bytecode]\n"
-                 "            [--bench=N --bench-out=FILE] <file.rg>\n"
-                 "       --dump-bytecode also accepts --engine=stack|register|jit\n"
-                 "       --inline-cache and --superinstructions need --engine=register or jit\n"
-                 "       --jit-threshold (default 1000), --jit-log and --jit-background need\n"
-                 "       --engine=jit\n";
+    out << "] [--gc-stress] [--stats[=pairs]] [--fold] [--inline-cache]\n"
+           "            [--superinstructions] [--jit-threshold=N] [--jit-log]\n"
+           "            [--jit-background]\n"
+           "            [--dump-tokens | --dump-ast | --dump-bytecode]\n"
+           "            [--bench=N --bench-out=FILE] <file.rg>\n"
+           "       --dump-bytecode also accepts --engine=stack|register|jit\n"
+           "       --inline-cache and --superinstructions need --engine=register or jit\n"
+           "       --jit-threshold (default 1000), --jit-log and --jit-background need\n"
+           "       --engine=jit\n"
+           "       rung --help | --version\n";
 }
 
 std::optional<std::string> read_file(const std::string& path) {
+    // A directory may open successfully and look like an empty file on some hosts.
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(path, error)) return std::nullopt;
     std::ifstream in(path, std::ios::binary);
     if (!in) return std::nullopt;
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    std::string source;
+    char buffer[8192];
+    while (in.read(buffer, sizeof buffer)) source.append(buffer, sizeof buffer);
+    source.append(buffer, static_cast<std::size_t>(in.gcount()));
+    if (in.bad() || !in.eof()) return std::nullopt;
+    return source;
 }
 
 void dump_tokens(const std::vector<rung::Token>& tokens) {
@@ -307,7 +316,20 @@ int main(int argc, char** argv) {
 
     for (int i = 1; i < argc; ++i) {
         std::string_view arg = argv[i];
-        if (arg == "--dump-tokens") {
+        if (arg == "--help" || arg == "-h") {
+            std::cout << "Rung: one language, multiple execution engines.\n\n";
+            print_usage(std::cout);
+            std::cout << "\nRun a program:    rung examples/fib.rg\n"
+                         "Inspect bytecode: rung --engine=register --dump-bytecode examples/fib.rg\n"
+                         "\nThe default engine is tree. Available engines are listed above.\n"
+                         "The JIT needs ARM64 and NaN-boxed values.\n";
+            return kExitOk;
+        } else if (arg == "--version") {
+            std::cout << "rung " << RUNG_VERSION << "\nengines:";
+            for (std::string_view name : rung::engine_names()) std::cout << " " << name;
+            std::cout << "\n";
+            return kExitOk;
+        } else if (arg == "--dump-tokens") {
             options.want_tokens = true;
         } else if (arg == "--dump-ast") {
             options.want_ast = true;
