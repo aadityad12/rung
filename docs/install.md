@@ -86,7 +86,11 @@ performance.
 
 ## Portable archives
 
-Create a versioned archive of the build on your machine:
+[Download v0.1.0](https://github.com/aadityad12/rung/releases/tag/v0.1.0) for macOS ARM64,
+Linux ARM64 or Linux x86-64. SHA-256 checksums accompany each archive. This release includes the
+original guided tour; recursive JIT calls require a source build of this revision.
+
+To package a source build, create a versioned archive of the build on your machine:
 
 ```sh
 cpack --config build/release-goto-nanbox/CPackConfig.cmake -B build/packages
@@ -109,5 +113,4 @@ The [packages workflow](../.github/workflows/packages.yml) builds and tests nati
 macOS ARM64, Linux ARM64 and Linux x86-64, then smoke-tests the extracted packages. Manual runs
 upload archives and SHA-256 checksums as workflow artifacts. A version tag matching the CMake
 version (for example `v0.1.0`) prepares a **draft** GitHub release with the same files. Published
-downloads will appear on the [Releases page](https://github.com/aadityad12/rung/releases) once a
-release has been reviewed and published.
+downloads are available on the [Releases page](https://github.com/aadityad12/rung/releases).

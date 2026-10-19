@@ -60,7 +60,7 @@ def main():
                 y += 28
         draw.line((38, 491, WIDTH - 38, 491), fill="#30405a", width=1)
         draw.line((38, 491, 38 + int((WIDTH - 76) * progress), 491), fill=ACCENT, width=2)
-        draw.text((38, 508), "Real output / paced for reading / compile durations omitted",
+        draw.text((38, 508), "Real output / paced playback / compile times and code sizes omitted",
                   font=small, fill=MUTED)
         return canvas
 
@@ -68,7 +68,7 @@ def main():
                   f"Captured with {capture['version'].splitlines()[0]} on "
                   f"{capture['platform']} {capture['architecture']}.", "",
                   "Commands use `rung` for readability; point them at your built or installed binary.", ""]
-    for section in ("engines", "bytecode", "jit"):
+    for section in ("engines", "bytecode", "jit", "recursion"):
         items = [r for r in capture["records"] if r["section"] == section]
         if not items:
             parser.error(f"capture has no {section} demo; record with a native ARM64 JIT build")
@@ -86,7 +86,7 @@ def main():
                 output += [(s, GREEN if section != "bytecode" else TEXT)
                            for s in item["stdout"].splitlines()]
             # Long command lines and logs get their own frame, keeping terminal text legible.
-            lines = output if section == "jit" else command + [("", MUTED)] + output
+            lines = output if section in ("jit", "recursion") else command + [("", MUTED)] + output
             frames.append(frame(section, item["title"], item["caption"], lines, (i + 1) / len(items)))
             durations.append(3700 if section != "engines" else 1800)
             transcript += [f"## {item['title']}", "", item["caption"], "", "```sh",

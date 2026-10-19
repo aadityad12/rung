@@ -13,20 +13,31 @@ How to read these tables:
   NaN-boxing lost on all six benchmarks, and it stays in the ladder because everything above it
   builds on it: the JIT's type checks read NaN-box tags.
 - **‡ means the JIT compiled nothing in that benchmark.** Every hot function there uses
-  something the JIT doesn't support yet (global variables, which includes every call to a named
-  function, float or string constants, closures, or built-in calls). Those cells measure the
+  something the JIT doesn't support yet (globals other than the function's own name, other named
+  calls, float or string constants, closures, or built-in calls). Those cells measure the
   register VM, not machine code. The footnote under the tables says what each one uses.
 - **† means the figure is uncertain.** `loop_sum` under `07_ic` was noisy in every attempt. Its
   speed falls into a few distinct groups from one process to the next, and I haven't found why.
-- **Not every pair of rows was measured together.** The rows come from four benchmark sessions.
-  Three of the marginal ratios (`02_stack` over `01_tree`, `07_ic` over `06_super`, and `09_jit`
-  over `08_fold`) compare sessions taken at different times, so differences of a percent or two
-  between them don't mean much.
-- **Background compilation** helped only where a compile pause could matter. On
-  `bench/warmup.rg`, a benchmark built so that 64 functions become hot in the same short call,
-  compiling on a second thread cut the slowest calls by more than half, at the cost of slower
-  5th and 6th calls while the compiled code wasn't ready yet. On the six main benchmarks a
-  compile takes microseconds, so there was no pause to remove.
+- **Not every pair of rows was measured together.** The retained rows come from four sessions.
+  `08_fold`, `09_jit`, `jit_sync` and `jit_background` were measured together on October 19.
+  Three marginal ratios cross sessions: `02_stack` over `01_tree`, `07_ic` over `06_super`, and
+  `08_fold` over `07_ic`. In particular, the new apparent gain from folding on `loop_sum` also
+  spans source revisions and sessions; it cannot be attributed to folding alone.
+- **Background compilation** helped on `bench/warmup.rg`, where 64 functions become hot in
+  one short call: p99 fell from 0.89 ms to 0.28 ms. On the six main benchmarks it did not give a
+  consistent tail-latency improvement. The background pair was measured in the same session.
+
+## Isolating the JIT gain
+
+Unlike the full ladder's historical comparisons, these two configurations were measured
+in the same interleaved session on the same source revision. The baseline already includes
+constant folding and the register VM's other optimizations. The 1× line means equal speed;
+small differences around it should not be read as evidence of a substantial gain.
+
+![JIT speedup over the optimized register VM, with timings and explicit fallback markers](assets/jit-comparison.svg)
+
+Both results charts are generated from committed measurements by
+`python3 scripts/render_results.py`; `--check` verifies that neither has drifted.
 
 ## One rung up close: stack VM to register VM
 
@@ -80,17 +91,35 @@ retired, branch misses) for any rung, because that needs a full Xcode install.
 
 I expected NaN-boxing to help, especially on `sieve`, where smaller values should make the large array cheaper to work with. It did cut values from 16 bytes to 8, and total heap allocation per process (20 calls) fell from about 192 MB to 96 MB (`results/03_goto.json` and `results/04_nanbox.json`). But every benchmark got slower. `sieve` had the biggest loss, at 0.63× the speed of the previous row. I don't know why yet: more expensive type checks, changes to the compiled dispatch loop, and a workload that wasn't limited by memory are all possible explanations, but none has been tested. Superinstructions gave me another result I hadn't expected: `strcat` dispatched 36.5% fewer instructions with almost no change in time. That suggests the string runtime is where most of its time goes, although I haven't confirmed that with a profile. Inline caching went the other way: `fib` gained 1.46×, more than I expected (`results/06_super.json` and `results/07_ic.json`; these two rows were measured in separate `bench.py` runs, so the ratio is not an interleaved comparison).
 
-The JIT result needs some context. The 22.64× speedup over the tree-walker is for `loop_sum`, the only one of the six benchmarks where a function actually compiles. The others hit unsupported operations and keep running in the register VM. Even on `loop_sum`, the first call finishes in the interpreter because there is no on-stack replacement. Comparing the median call times gives a clearer view of the compiled calls: 42.55 ms before the JIT and 12.25 ms after (`results/08_fold.json` and `results/09_jit.json`, from separate runs). Compilation itself took about 16 µs, so moving it to another thread didn't produce a measurable tail-latency gain on the main suite. On `warmup`, a separate benchmark built to make 64 functions become hot together, background compilation reduced p99 from 0.82 ms to 0.32 ms (`results/jit_sync.json` and `results/jit_background.json`). Some later calls were slower because the code wasn't ready yet. I can point to a benefit on that test, but I can't generalize it to the whole suite. `loop_sum` also has an unresolved oddity: interpreted calls fall into distinct speed groups across processes, and its background tail was worse in this measurement. I don't have an explanation for that yet.
+Direct self-recursion gives the JIT a second substantial workload. In the October 19
+interleaved run, `fib` went from 13.37 ms in the optimized register VM to 2.94 ms with the JIT:
+**4.54× faster**, using median process total divided by calls (`results/08_fold.json` and
+`results/09_jit.json`). Compilation cost about 21 µs per process. The older result was VM
+execution, so it is not evidence about how fast the earlier JIT executed recursive code.
+
+`loop_sum` went from 30.22 ms to 13.37 ms by the same metric, a 2.26× gain. Its pooled median
+individual call was 30.34 ms before the JIT and 12.11 ms after; the process-total metric also
+includes the first interpreted call because there is no on-stack replacement. The other four
+main workloads still fall back to the VM. Their JIT ratios range from 0.98× to 1.00× after
+rounding, including small regressions rather than a blanket improvement.
+
+Background compilation reduced `warmup` p99 from 0.89 ms to 0.28 ms, while pooled p50 stayed
+about 0.088 ms (`results/jit_sync.json` and `results/jit_background.json`). That workload makes
+64 functions hot together, giving the compiler thread a useful amount of work. This does not
+generalize to the main suite: for example, `loop_sum` p99 was 38.71 ms synchronously and
+40.06 ms in the background. The earlier unexplained `loop_sum` timing groups remain an open
+question even though none of the October 19 retained measurements exceeded the noise limit.
 
 I thought generated machine code would be the most likely place for a crash. The baseline JIT tests passed from their first run; the intermittent crash around executable memory came from a sanitizer check on Linux ARM64. Before an indirect call, UBSan reads the eight bytes before the function's address. When the code started at the beginning of a mapped page, that read could reach unmapped memory. Leaving 16 zero bytes before the code fixed it. About 5% of runs crashed, so a single run usually passed; the cause was found by looping the test 300 to 600 times in CI (notes §5). The background compiler exposed a different problem with testing: on macOS, ThreadSanitizer missed a deliberately broken handoff while code was copied with `memcpy`. Plain four-byte stores, together with a C++ read of the code before execution, made the broken handoff detectable. That made me more careful about treating a clean sanitizer run as evidence: it matters whether the sanitizer can see the accesses being checked.
 
 ## Limitations and what I'd do next
 
 - **The JIT covers a narrow slice of the language.** It compiles integer arithmetic,
-  comparisons, jumps and array reads and writes. Calls, globals, floats, strings and closures
-  stay in the VM, which is why it compiles one benchmark out of six. Compiling `fib` would need
-  direct self-recursion. `sieve`'s loops already compile when they're handed the array, but its
-  function also calls the built-in `array`, and calls are outside what the JIT supports.
+  comparisons, jumps, array reads and writes, and a function calling itself through its own
+  global, which is how `fib` compiles. Other calls, globals, floats, strings and closures stay in
+  the VM, so it compiles functions in two benchmarks out of six (`fib` and `loop_sum`). `sieve`'s
+  loops already compile when they're handed the array, but its function also calls the built-in
+  `array`, and calling anything but itself is outside what the JIT supports.
 - **No on-stack replacement.** A function that gets hot in the middle of a long call finishes
   that call in the interpreter, and only later calls run as machine code.
 - **NaN-boxing's slowdown is unexplained.** My candidate explanations (costlier type checks, a

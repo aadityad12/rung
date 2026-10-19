@@ -275,6 +275,9 @@ std::string RegisterEngine::pair_report() const {
 void RegisterEngine::jit_count(ObjFunction* function) {
     if (function->jit_status != JitStatus::Cold || function->name == nullptr) return;
     if (++function->jit_hotness < jit_->threshold()) return;
+    // A function may call itself through the global with its name (issue #25). The compiler
+    // never reads the globals table, which only this thread may touch, so the cell is found here.
+    function->jit_self_global = find_global(function->name);
     if (jit_->background()) {
         jit_->enqueue(*function);
     } else {
@@ -286,7 +289,9 @@ void RegisterEngine::jit_count(ObjFunction* function) {
 // and, if the function has machine code, runs it. The code works on the frame's registers in
 // place and returns the index of the instruction the VM resumes at: a RETURN if it ran to the
 // end (the VM performs the return), else the instruction whose guard failed, which the VM
-// executes itself, error and all. Returns the pc to continue from.
+// executes itself, error and all. Returns the pc to continue from, or null if a check failed
+// inside a call the machine code made itself (issue #25): then the code has pushed frames onto
+// frames_ and saved the failing frame's pc, and the caller reloads the newest frame.
 //
 // The pointer is read here, in C++, with an acquire load that pairs with the compiler thread's
 // release store (notes D8), so ThreadSanitizer checks the handoff; the machine code itself never
@@ -297,7 +302,17 @@ const Instruction* RegisterEngine::jit_frame_entry(ObjFunction* function, Value*
     const JitEntry entry = function->jit_entry.load(std::memory_order_acquire);
     if (entry == nullptr) return pc;
     if (function->jit_status != JitStatus::Compiled) jit::Jit::adopt(*function, entry);
-    const std::uint32_t resume = entry(base);
+    const JitContext context{frames_.get(), &frame_count_,
+                             static_cast<std::size_t>(kMaxCallDepth) + uncounted_frames_,
+                             register_end_};
+    const std::uint32_t resume = entry(base, &context);
+    if (resume == jit::kNestedBailout) {
+        const CallFrame& newest = frames_[frame_count_ - 1];
+        const ObjFunction* failed = newest.closure->function;
+        jit_->note_bailout(*failed,
+                           static_cast<std::size_t>(newest.pc - failed->reg.code.data()));
+        return nullptr;
+    }
     const Instruction* code = function->reg.code.data();
     RegOp op = insn_op(code[resume]);
     if (op != RegOp::Return && op != RegOp::ReturnNil) jit_->note_bailout(*function, resume);
@@ -485,7 +500,10 @@ bool RegisterEngine::execute(std::size_t stop_frames) {
 #if RUNG_JIT
 #define JIT_FRAME_ENTRY()                                                       \
     do {                                                                        \
-        if constexpr (kJit) pc = jit_frame_entry(closure->function, base, pc);  \
+        if constexpr (kJit) {                                                   \
+            pc = jit_frame_entry(closure->function, base, pc);                  \
+            if (pc == nullptr) LOAD_FRAME();                                    \
+        }                                                                       \
     } while (false)
 #define JIT_BACK_EDGE()                                                         \
     do {                                                                        \

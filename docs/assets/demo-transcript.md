@@ -1,6 +1,6 @@
 # Demo transcript
 
-Real command output; compiler durations omitted. Playback is paced for reading, not execution time.
+Real command output; compile durations and native code sizes omitted. Playback is paced for reading, not execution time.
 
 Captured with rung 0.1.0 on Darwin arm64.
 
@@ -129,7 +129,7 @@ rung --engine=jit --jit-log examples/hot_loop.rg
 stderr:
 
 ```text
-[jit] compiled sum: 10 bytecode instructions -> 67 machine instructions (268 bytes)
+[jit] compiled sum: 10 bytecode instructions
 ```
 
 stdout:
@@ -150,7 +150,7 @@ rung --engine=jit --jit-threshold=1 --jit-log examples/jit_fallback.rg
 stderr:
 
 ```text
-[jit] compiled add: 3 bytecode instructions -> 21 machine instructions (84 bytes)
+[jit] compiled add: 3 bytecode instructions
 [jit] bail-out in add at instruction 0 (ADD, line 4)
 ```
 
@@ -159,4 +159,46 @@ stdout:
 ```text
 42
 22.5
+```
+
+## Recursive calls enter native code
+
+fib(20): both recursive calls use the function's own ARM64 entry.
+
+```sh
+rung --engine=jit --jit-threshold=1 --jit-log examples/recursion.rg
+```
+
+stderr:
+
+```text
+[jit] compiled fib: 12 bytecode instructions
+```
+
+stdout:
+
+```text
+6765
+```
+
+## A bailout four calls deep
+
+A float fails a guard in the innermost call; the VM finishes all five frames.
+
+```sh
+rung --engine=jit --jit-threshold=1 --jit-log examples/recursive_fallback.rg
+```
+
+stderr:
+
+```text
+[jit] compiled tally: 13 bytecode instructions
+[jit] bail-out in tally at instruction 4 (ADD, line 7)
+```
+
+stdout:
+
+```text
+7
+6.5
 ```

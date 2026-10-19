@@ -61,7 +61,7 @@ struct Ran {
 };
 Ran run(const Compiled& code, Value a, Value b) {
     std::vector<Value> regs = {a, b, make_int(-12345)};
-    std::uint32_t resume = code.entry(regs.data());
+    std::uint32_t resume = code.entry(regs.data(), nullptr);
     return {resume, regs};
 }
 
@@ -228,12 +228,12 @@ TEST_CASE("jit code: a loop runs to its return") {
     Compiled code(chunk);
     std::vector<Value> regs(4, make_nil());
     regs[0] = make_int(100);
-    CHECK(code.entry(regs.data()) == 7);
+    CHECK(code.entry(regs.data(), nullptr) == 7);
     CHECK(as_int(regs[1]) == 4950);
     CHECK(as_int(regs[2]) == 100);
     // A float bound fails the LT's guard on the first test: resume there, nothing else changed.
     regs[0] = make_float(3.5);
-    CHECK(code.entry(regs.data()) == 2);
+    CHECK(code.entry(regs.data(), nullptr) == 2);
     CHECK(as_int(regs[1]) == 0);
 }
 
@@ -341,14 +341,69 @@ TEST_CASE("jit engine: a function is compiled when its calls reach the threshold
 
 TEST_CASE("jit engine: rejected functions are logged once and stay in the VM") {
     const std::string source = R"(
-        fn fib(n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); }
-        print fib(15);
+        let k = 3;
+        fn scale(n) { return n * k; }
+        print scale(5);
+        print scale(7);
     )";
     EngineRun r = run_jit(source, 1);
-    CHECK(r.output == "610\n");
-    CHECK(r.log == "[jit] rejected fib: instruction 3 (GET_GLOBAL) uses a global variable\n");
+    CHECK(r.output == "15\n21\n");
+    CHECK(r.log == "[jit] rejected scale: instruction 0 (GET_GLOBAL) uses a global variable\n");
     CHECK(r.stats.find("jit: 0 functions compiled (0 bytes of code), 1 rejected, 0 bail-outs") ==
           0);
+}
+
+// Self-recursion (issue #25, notes D7).
+
+TEST_CASE("jit engine: fib calls itself in machine code") {
+    const std::string source = R"(
+        fn fib(n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); }
+        print fib(20);
+    )";
+    for (std::uint32_t threshold : {1u, 50u}) {
+        CAPTURE(threshold);
+        // With 50, fib gets hot partway down the recursion: machine code then runs on top of
+        // frames the VM pushed, and returns into them.
+        EngineRun r = run_jit(source, threshold);
+        CHECK(r.result.ok());
+        CHECK(r.output == "6765\n");
+        CHECK(count(r.log, "[jit] compiled fib") == 1);
+        CHECK(count(r.log, "bail-out") == 0);
+    }
+}
+
+TEST_CASE("jit engine: a check failing deep in a self-call resumes the innermost frame") {
+    const std::string source = R"(
+        fn tally(n, step) {
+            if (n == 0) {
+                let s = 1;
+                s = s + 1;
+                s = s + step;
+                return s;
+            }
+            return tally(n - 1, step) + 1;
+        }
+        print tally(4, 1);
+        print tally(4, 0.5);
+    )";
+    EngineRun r = run_jit(source, 1);
+    CHECK(r.output == "7\n6.5\n");
+    // One bail-out, reported where it happened: the innermost call, at `s + step` (line 6).
+    CHECK(count(r.log, "bail-out") == 1);
+    CHECK(count(r.log, "[jit] bail-out in tally at instruction 4 (ADD, line 6)\n") == 1);
+}
+
+TEST_CASE("jit engine: self-calls in machine code count towards the call limit") {
+    const std::string source = R"(
+        fn down(n) { if (n == 0) return 0; return 1 + down(n - 1); }
+        print down(9999);
+        print down(10000);
+    )";
+    EngineRun r = run_jit(source, 1);
+    CHECK(r.output == "9999\n");
+    REQUIRE(r.result.runtime_error.has_value());
+    CHECK(r.result.runtime_error->message == "stack overflow");
+    CHECK(r.result.runtime_error->line == 2);
 }
 
 TEST_CASE("jit engine: a guard failing mid-loop resumes the VM on the frame the code left") {
@@ -424,11 +479,11 @@ TEST_CASE("jit code: an array element is read and written in machine code") {
     }
     Compiled set(index_set());
     std::vector<Value> regs = {make_obj(array), make_int(3), make_bool(true)};
-    CHECK(set.entry(regs.data()) == 1);
+    CHECK(set.entry(regs.data(), nullptr) == 1);
     CHECK(value_bits(array->elements[3]) == value_bits(make_bool(true)));
     regs[1] = make_int(0);
     regs[2] = make_obj(array);  // an array may hold itself
-    CHECK(set.entry(regs.data()) == 1);
+    CHECK(set.entry(regs.data(), nullptr) == 1);
     CHECK(value_bits(array->elements[0]) == value_bits(make_obj(array)));
 }
 
@@ -453,7 +508,7 @@ TEST_CASE("jit code: every failed array check bails out before writing anything"
     };
     const auto check_set = [&](Value a, Value i) {
         std::vector<Value> regs = {a, i, make_int(99)};
-        CHECK(set.entry(regs.data()) == 0);
+        CHECK(set.entry(regs.data(), nullptr) == 0);
         for (Value v : array->elements) CHECK(as_int(v) == 7);  // the elements are untouched
     };
     for (Value a : not_arrays) {
@@ -624,7 +679,7 @@ std::string summing_functions(int count) {
 std::int32_t run_published(ObjFunction& function, JitEntry entry, std::int32_t n) {
     std::vector<Value> registers(static_cast<std::size_t>(function.reg.frame_size), make_nil());
     registers[0] = make_int(n);
-    const Instruction at = function.reg.code[entry(registers.data())];
+    const Instruction at = function.reg.code[entry(registers.data(), nullptr)];
     REQUIRE(insn_op(at) == RegOp::Return);
     REQUIRE(is_int(registers[insn_b(at)]));
     return as_int(registers[insn_b(at)]);

@@ -34,8 +34,10 @@ const ObjFunction* find_function(const ObjFunction& in, std::string_view name) {
 
 // What check_whitelist says about the function `name` in `source`: "ok", or
 // "<instruction index>: <reason>". With `superinstructions` the code is fused first (rung 3d).
+// With `self_global` the JIT is told the function has a global with its name (issue #25), as
+// the engine tells it when one is defined.
 std::string verdict(const std::string& source, std::string_view name,
-                    bool superinstructions = false) {
+                    bool superinstructions = false, bool self_global = false) {
     ParseResult parsed = parse(source);
     REQUIRE(parsed.ok());
     REQUIRE_FALSE(resolve(*parsed.program).has_value());
@@ -47,7 +49,10 @@ std::string verdict(const std::string& source, std::string_view name,
     Heap::TempRoot root(heap, make_obj(compiled.function));
     const ObjFunction* fn = find_function(*compiled.function, name);
     REQUIRE(fn != nullptr);
-    std::optional<jit::Rejection> rejection = jit::check_whitelist(fn->reg);
+    const Value cell = make_nil();  // never read: the whitelist only needs to know it exists
+    const jit::SelfCall self{fn, &cell};
+    std::optional<jit::Rejection> rejection =
+        jit::check_whitelist(fn->reg, self_global ? &self : nullptr);
     if (!rejection) return "ok";
     return std::to_string(rejection->index) + ": " + rejection->reason;
 }
@@ -175,6 +180,56 @@ TEST_CASE("jit whitelist: fused superinstructions are judged as their two halves
     CHECK(verdict(float_store, "f", true) == "0: uses a float constant");
     CHECK(unfused_op(make_abc(RegOp::ModAdd, 0, 0, 0)) == RegOp::Mod);
     CHECK(unfused_op(make_abc(RegOp::Add, 0, 0, 0)) == RegOp::Add);
+}
+
+TEST_CASE("jit whitelist: a function may call itself through its own global (issue #25)") {
+    const std::string fib = "fn fib(n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); }";
+    CHECK(verdict(fib, "fib", false, true) == "ok");
+    CHECK(verdict(fib, "fib", true, true) == "ok");  // fused, judged as its halves
+    // Without a global of that name the global read is still out.
+    CHECK(verdict(fib, "fib") == "3: uses a global variable");
+    // Only its own name: reading any other global, or writing its own, stays out.
+    CHECK(verdict("fn f(n) { return g(n); }", "f", false, true) == "0: uses a global variable");
+    CHECK(verdict("fn f(n) { f = n; return n; }", "f", false, true) ==
+          "1: uses a global variable");
+    // A function that only calls what it was passed would fail its self-call check every time.
+    CHECK(verdict("fn f(g) { return g(); }", "f", false, true) ==
+          "1: calls a function other than itself");
+    // Its own name as a local is not the global.
+    CHECK(verdict("fn f(n) { let f = n; return f + 1; }", "f", false, true) == "ok");
+}
+
+TEST_CASE("jit whitelist: the closure layout is found on a real ObjClosure") {
+    const jit::ClosureLayout& layout = jit::closure_layout();
+    REQUIRE(layout.usable);
+    ObjFunction function(nullptr);
+    ObjClosure closure(&function);
+    const auto* at = reinterpret_cast<const unsigned char*>(static_cast<const Obj*>(&closure));
+    const ObjFunction* found;
+    std::memcpy(&found, at + layout.function, sizeof found);
+    CHECK(found == &function);
+    CHECK(at[layout.kind] == static_cast<unsigned char>(ObjKind::Closure));
+}
+
+TEST_CASE("jit whitelist: a self-call needs a frame small enough to read the callee's result") {
+    Heap heap;
+    ObjString* name = heap.intern(std::string_view("f"));
+    Heap::TempRoot root(heap, make_obj(name));
+    ObjFunction function(name);
+    RegChunk& chunk = function.reg;
+    chunk.constants.push_back(make_obj(name));
+    chunk.emit(make_abx(RegOp::GetGlobal, 0, 0), 1);
+    chunk.emit(make_abc(RegOp::Call, 0, 0, 0), 1);
+    chunk.emit(make_abc(RegOp::Return, 0, 0, 0), 1);
+    const Value cell = make_nil();
+    const jit::SelfCall self{&function, &cell};
+    chunk.frame_size = jit::kMaxSelfCallFrameSize;
+    CHECK_FALSE(jit::check_whitelist(chunk, &self).has_value());
+    chunk.frame_size = jit::kMaxSelfCallFrameSize + 1;
+    std::optional<jit::Rejection> rejection = jit::check_whitelist(chunk, &self);
+    REQUIRE(rejection.has_value());
+    CHECK(rejection->index == 1);
+    CHECK(rejection->reason == "calls itself, with more registers than a self-call allows");
 }
 
 TEST_CASE("jit whitelist: frames past LDR/STR's reach are rejected") {

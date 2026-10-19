@@ -15,7 +15,7 @@ With an ARM64 JIT build, the same command also demonstrates native compilation a
 python3 scripts/demo.py --rung build/release-goto-nanbox/rung
 ```
 
-Use `--section engines`, `--section bytecode`, or `--section jit` to run just one part.
+Use `--section engines`, `--section bytecode`, `--section jit`, or `--section recursion` to run just one part.
 An unavailable JIT is explicitly skipped; the interpreter and bytecode demonstrations still run.
 
 ## One program, the same answer
@@ -59,8 +59,36 @@ position to the VM. The VM continues the same call and prints `22.5`.
 
 [Still image](assets/jit.png) · [Text transcript](assets/demo-transcript.md)
 
-The clips are generated from checked command output on ARM64. Compiler durations are omitted,
-and frames are paced for reading. stdout and stderr are shown separately, not as an execution
+## Recursive calls and nested fallback
+
+[recursion.rg](../examples/recursion.rg) computes `fib(20)`, printing `6765`. With a threshold
+of one, the first invocation compiles and both recursive calls branch to the same native entry.
+Each native call pushes an ordinary VM frame, so the VM can recover if a later guard fails.
+
+[recursive_fallback.rg](../examples/recursive_fallback.rg) first calls `tally(4, 1)`, then
+`tally(4, 0.5)`. The float reaches an integer addition only in the innermost call. Native code
+unwinds its machine stack while preserving the VM frames, and the VM resumes at that addition.
+It finishes the five frames and prints `6.5`; no earlier work is repeated.
+
+![Nested bailout preserves five VM frames, resumes the failed addition, and returns 6.5](assets/recursive-bailout.svg)
+
+The diagram shows control flow, not timing. The native machine stack unwinds, but the VM's
+saved frames retain both the leaf's local values and each caller's pending addition.
+
+
+```sh
+python3 scripts/demo.py --rung build/release-goto-nanbox/rung --section recursion
+```
+
+![Recursive native execution followed by a nested guard bailout](assets/recursion.gif)
+
+[Still image](assets/recursion.png) · [Text transcript](assets/demo-transcript.md)
+
+This section requires the source revision with self-recursion support; it is not included in
+the v0.1.0 archives.
+
+The clips are generated from checked command output on ARM64. Compile durations and native code sizes
+(which depend on embedded addresses and the build) are omitted. Frames are paced for reading. stdout and stderr are shown separately, not as an execution
 timeline. The [capture](assets/demo.json) records the build version, platform and example hashes.
 
 ## Regenerate the clips

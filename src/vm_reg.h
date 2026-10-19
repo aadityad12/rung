@@ -16,6 +16,7 @@
 
 #if RUNG_JIT
 #include "jit/jit.h"
+#include "jit/jit_compiler.h"
 #endif
 
 namespace rung {
@@ -108,6 +109,13 @@ private:
         const Instruction* pc;  // saved while another frame runs; the loop keeps it in a local
         Value* base;            // register 0; base[-1] is the caller's register for the result
     };
+#if RUNG_JIT
+    // Machine code that calls itself pushes and edits these frames (issue #25).
+    static_assert(sizeof(CallFrame) == jit::kFrameBytes);
+    static_assert(offsetof(CallFrame, closure) == jit::kFrameClosureOffset);
+    static_assert(offsetof(CallFrame, pc) == jit::kFramePcOffset);
+    static_assert(offsetof(CallFrame, base) == jit::kFrameBaseOffset);
+#endif
 
     enum class CallOutcome { Error, PushedFrame, NativeDone };
 

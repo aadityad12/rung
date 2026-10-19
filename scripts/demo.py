@@ -17,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rung", default=str(ROOT / "build/debug/rung"),
                         help="executable to demonstrate (default: build/debug/rung)")
-    parser.add_argument("--section", choices=("all", "engines", "bytecode", "jit"), default="all")
+    parser.add_argument("--section", choices=("all", "engines", "bytecode", "jit", "recursion"), default="all")
     parser.add_argument("--capture", type=Path, help="write the verified tour as JSON for rendering")
     parser.add_argument("--check-capture", type=Path,
                         help="fail if the displayed output or examples differ from an earlier capture")
@@ -36,8 +36,10 @@ def main():
 
     def record(section, title, caption, flags, done, stdout=None):
         # These clips explain execution, not performance. Keep the real log but omit the
-        # variable compile duration; presentation pacing is independent of execution time.
+        # variable compile duration and native size. Embedded addresses need different
+        # MOVZ/MOVK sequences under ASLR and sanitizers, so size is build-dependent too.
         stderr = re.sub(r" in \d+ ns(?=\n|$)", "", done.stderr)
+        stderr = re.sub(r" -> \d+ machine instructions \(\d+ bytes\)", "", stderr)
         item = {"section": section, "title": title, "caption": caption,
                 "command": shlex.join(["rung", *flags]),
                 "stdout": done.stdout if stdout is None else stdout,
@@ -104,8 +106,30 @@ def main():
                        flags, done)
                 print("\nPASS: native compilation and fallback preserve the answers.")
 
+        if args.section in ("all", "recursion"):
+            if not jit:
+                print("\nSKIP: native recursion requires an ARM64 JIT build.")
+            else:
+                flags = ["--engine=jit", "--jit-threshold=1", "--jit-log", "examples/recursion.rg"]
+                done = run(flags, "6765\n")
+                if "[jit] compiled fib:" not in done.stderr or "[jit] bail-out" in done.stderr:
+                    raise RuntimeError("fib did not compile and finish without a bailout")
+                record("recursion", "Recursive calls enter native code",
+                       "fib(20): both recursive calls use the function's own ARM64 entry.", flags, done)
+                flags = ["--engine=jit", "--jit-threshold=1", "--jit-log",
+                         "examples/recursive_fallback.rg"]
+                done = run(flags, "7\n6.5\n")
+                if ("[jit] compiled tally:" not in done.stderr or
+                        done.stderr.count("[jit] bail-out in tally") != 1):
+                    raise RuntimeError("the nested type-guard fallback was not exercised exactly once")
+                record("recursion", "A bailout four calls deep",
+                       "A float fails a guard in the innermost call; the VM finishes all five frames.",
+                       flags, done)
+                print("\nPASS: recursive native calls and nested fallback preserve the answers.")
+
         examples = {name: hashlib.sha256((ROOT / "examples" / name).read_bytes()).hexdigest()
-                    for name in ("hot_loop.rg", "bytecode.rg", "jit_fallback.rg")}
+                    for name in ("hot_loop.rg", "bytecode.rg", "jit_fallback.rg",
+                                 "recursion.rg", "recursive_fallback.rg")}
         if args.check_capture:
             previous = json.loads(args.check_capture.read_text(encoding="utf-8"))
             if previous["example_sha256"] != examples:
@@ -118,7 +142,7 @@ def main():
         if args.capture:
             capture = {"version": version, "platform": platform.system(),
                        "architecture": platform.machine(), "example_sha256": examples,
-                       "presentation": "Real command output; compiler durations omitted. "
+                       "presentation": "Real command output; compile durations and native code sizes omitted. "
                                        "Playback is paced for reading, not execution time.",
                        "records": records}
             args.capture.parent.mkdir(parents=True, exist_ok=True)

@@ -375,6 +375,13 @@ def main(argv=None):
                 "iterations": args.iterations,
                 "seed": args.seed,
             }
+            if "--engine=jit" in config["args"]:
+                coverage_path = os.path.join(root, "bench", "jit_not_compiled.json")
+                try:
+                    with open(coverage_path, encoding="utf-8") as f:
+                        meta["jit_not_compiled"] = json.load(f)
+                except (OSError, ValueError) as error:
+                    raise BenchError(f"cannot snapshot JIT coverage: {error}")
             path = write_results(root, config, meta, summaries)
             print("wrote " + os.path.relpath(path, root))
             for name, entry in summaries.items():

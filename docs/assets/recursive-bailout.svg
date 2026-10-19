@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520" role="img" aria-labelledby="title desc">
+<title id="title">A nested guard failure resumes without restarting recursion</title>
+<desc id="desc">tally(4, 0.5) enters five native calls, each with a corresponding VM frame. The innermost call computes total equals two, then fails the integer guard for total plus step. The native stack unwinds while all five VM frames survive. The VM resumes two plus 0.5, then completes four pending additions, returning 6.5.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
+<rect width="960" height="520" rx="16" fill="#f5f8fc"/>
+<g font-family="system-ui, sans-serif" fill="#172235">
+<text x="30" y="38" font-size="23" font-weight="700">A bailout keeps the work already done</text>
+<text x="30" y="65" font-size="14">recursive_fallback.rg · tally(4, 0.5) · control flow, not elapsed time</text>
+<text x="30" y="110" font-size="17" font-weight="700">1. Enter native calls</text>
+<text x="350" y="110" font-size="17" font-weight="700">2. Preserve VM frames</text>
+<text x="680" y="110" font-size="17" font-weight="700">3. Finish in the VM</text>
+<g fill="#ece8f8" stroke="#7966c7">
+<rect x="30" y="130" width="250" height="42" rx="6"/>
+<rect x="30" y="182" width="250" height="42" rx="6"/>
+<rect x="30" y="234" width="250" height="42" rx="6"/>
+<rect x="30" y="286" width="250" height="42" rx="6"/>
+<rect x="30" y="338" width="250" height="62" rx="6"/>
+</g>
+<g font-size="15">
+<text x="46" y="157">tally(4, 0.5)</text><text x="46" y="209">tally(3, 0.5)</text>
+<text x="46" y="261">tally(2, 0.5)</text><text x="46" y="313">tally(1, 0.5)</text>
+<text x="46" y="361" font-weight="700">tally(0, 0.5): total = 2</text>
+<text x="46" y="385">Integer guard fails: 2 + 0.5</text>
+</g>
+<g stroke="#64748b" marker-end="url(#arrow)"><path d="M155 172V181"/><path d="M155 224V233"/><path d="M155 276V285"/><path d="M155 328V337"/></g>
+<g fill="#e1f2ef" stroke="#199b96">
+<rect x="350" y="130" width="260" height="42" rx="6"/><rect x="350" y="182" width="260" height="42" rx="6"/>
+<rect x="350" y="234" width="260" height="42" rx="6"/><rect x="350" y="286" width="260" height="42" rx="6"/>
+<rect x="350" y="338" width="260" height="62" rx="6"/>
+</g>
+<g font-size="15">
+<text x="366" y="157">n = 4 · waiting to add 1</text><text x="366" y="209">n = 3 · waiting to add 1</text>
+<text x="366" y="261">n = 2 · waiting to add 1</text><text x="366" y="313">n = 1 · waiting to add 1</text>
+<text x="366" y="361" font-weight="700">n = 0 · resume failed ADD</text><text x="366" y="385">total = 2, step = 0.5</text>
+</g>
+<g stroke="#64748b" marker-end="url(#arrow)"><path d="M286 151H340"/><path d="M286 203H340"/><path d="M286 255H340"/><path d="M286 307H340"/><path d="M286 369H340"/><path d="M616 369H670"/></g>
+<g font-size="16"><text x="692" y="157" font-weight="700">5.5 + 1 = 6.5 → return</text><text x="692" y="209">4.5 + 1 = 5.5</text><text x="692" y="261">3.5 + 1 = 4.5</text><text x="692" y="313">2.5 + 1 = 3.5</text><text x="692" y="374" font-weight="700">2 + 0.5 = 2.5</text></g>
+<g stroke="#199b96" marker-end="url(#arrow)"><path d="M785 348V326"/><path d="M785 292V274"/><path d="M785 240V222"/><path d="M785 188V170"/></g>
+<text x="30" y="440" font-size="14">Native machine frames unwind; ordinary VM frames remain available for recovery.</text>
+<text x="30" y="467" font-size="14">The VM starts at the failed addition. It does not repeat the earlier increment that made total = 2.</text>
+<text x="30" y="494" font-size="12">Each native recursive call creates its VM frame before entering the next native invocation.</text>
+</g></svg>
