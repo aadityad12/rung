@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "runtime/function.h"
 #include "runtime/object.h"
 #include "runtime/value.h"
 
@@ -77,7 +78,62 @@ ArrayLayout probe_array_layout() {
     return layout;
 }
 
+// Finds an ObjClosure's function pointer the same way: build a real closure of a real function
+// and look for the function's address among the closure's 8-byte words. ObjClosure derives from
+// Obj and has members of its own, so it is not standard-layout and offsetof is not reliable.
+ClosureLayout probe_closure_layout() {
+    ObjFunction function(nullptr);  // no upvalues, so the closure's vector stays empty
+    const ObjClosure closure(&function);
+    ClosureLayout layout;
+    const Obj* header = &closure;  // the address a NaN box holds (make_obj)
+    constexpr std::size_t kWords = sizeof(ObjClosure) / sizeof(std::uintptr_t);
+    std::uintptr_t words[kWords];
+    std::memcpy(words, static_cast<const void*>(header), sizeof words);
+    std::optional<std::size_t> found;
+    for (std::size_t i = 0; i < kWords; ++i) {
+        if (words[i] != reinterpret_cast<std::uintptr_t>(&function)) continue;
+        if (found) return layout;  // ambiguous
+        found = i * sizeof(std::uintptr_t);
+    }
+    if (!found || *found > 4095 * 8) return layout;
+    layout.usable = true;
+    layout.kind = static_cast<std::uint32_t>(offsetof(Obj, kind));
+    layout.function = static_cast<std::uint32_t>(*found);
+    return layout;
+}
+
+// True if constant `k` is the string that names the function being compiled. Names are
+// interned (notes D10), so the same name is the same ObjString.
+bool names_self(Value k, const SelfCall& self) {
+    return is_string(k) && as_string(k) == self.function->name;
+}
+
+// Whether `self` allows this chunk to call itself at all: the function has a global with its
+// name, the closure layout is known, the frame is small enough, and the chunk actually reads
+// that global (a function that only calls what it was passed would bail out on every call).
+const char* self_call_problem(const RegChunk& chunk, const SelfCall* self) {
+    if (self == nullptr || self->global == nullptr) return "calls a function";
+    if (!closure_layout().usable) {
+        return "calls itself, and this compiler's ObjClosure layout is not one the JIT reads";
+    }
+    if (chunk.frame_size > kMaxSelfCallFrameSize) {
+        return "calls itself, with more registers than a self-call allows";
+    }
+    for (Instruction insn : chunk.code) {
+        if (unfused_op(insn) == RegOp::GetGlobal && names_self(chunk.constants[insn_bx(insn)],
+                                                               *self)) {
+            return nullptr;
+        }
+    }
+    return "calls a function other than itself";
+}
+
 }  // namespace
+
+const ClosureLayout& closure_layout() {
+    static const ClosureLayout layout = probe_closure_layout();
+    return layout;
+}
 
 const ArrayLayout& array_layout() {
     // Initialised once, thread-safely: the background compiler thread may be first (notes D8).
@@ -96,7 +152,7 @@ RegOp unfused_op(Instruction insn) {
     return is_fused(op) ? fused_first(op) : op;
 }
 
-std::optional<Rejection> check_whitelist(const RegChunk& chunk) {
+std::optional<Rejection> check_whitelist(const RegChunk& chunk, const SelfCall* self) {
     if (chunk.frame_size > kMaxFrameSize) {
         return Rejection{0, "needs " + std::to_string(chunk.frame_size) +
                                 " registers, more than the JIT addresses (" +
@@ -157,6 +213,12 @@ std::optional<Rejection> check_whitelist(const RegChunk& chunk) {
                 problem = "uses '!', which is not in the whitelist";
                 break;
             case RegOp::GetGlobal:
+                // Only its own name, for a self-call (issue #25).
+                if (self == nullptr || self->global == nullptr ||
+                    !names_self(chunk.constants[insn_bx(insn)], *self)) {
+                    problem = "uses a global variable";
+                }
+                break;
             case RegOp::SetGlobal:
             case RegOp::DefineGlobal:
                 problem = "uses a global variable";
@@ -171,7 +233,8 @@ std::optional<Rejection> check_whitelist(const RegChunk& chunk) {
                 problem = "creates or closes a closure";
                 break;
             case RegOp::Call:
-                problem = "calls a function";
+                // Compiled with a guard that the callee is this function (issue #25).
+                problem = self_call_problem(chunk, self);
                 break;
             case RegOp::Print:
                 problem = "prints";
@@ -217,27 +280,31 @@ std::optional<Rejection> check_whitelist(const RegChunk& chunk) {
 //
 // Calling convention (AAPCS64, the standard ARM64 procedure call standard, which both macOS and
 // Linux follow for the registers used here). The VM calls the code as a C function
-// `uint32_t f(Value* base)`:
+// `uint32_t f(Value* base, const JitContext* context)`:
 //
 //   x0        in: the frame's register 0 (`base`); out: w0 = the bytecode index to resume at.
 //             The VM's register r is the 8-byte NaN-boxed value at [x0 + r*8].
-//   x1..x4    constants set up on entry (below). x1..x7 are argument registers, which the
+//   x1        in: the context (only a function that calls itself reads it); then, like x2..x4,
+//             a constant set up on entry (below). x1..x7 are argument registers, which the
 //             callee may overwrite freely.
 //   x5        a fifth constant, the object tag, set up on entry only in a function that reads
-//             or writes an array element (issue #26).
+//             or writes an array element (issue #26) or calls itself (issue #25).
 //   x9..x12   scratch. x9..x15 are "temporary" registers, also free for the callee.
-//   x13..x15  scratch for an array access: the array's address, its element 0, its length.
+//   x13..x15  scratch for an array access or a call.
 //   x16, x17  not used (the linker may use them between a call and its target).
 //   x18       never touched: Apple reserves it for the platform.
-//   x19..x28  callee-saved; not used, so nothing needs saving.
-//   x29, x30  frame pointer and return address; not touched, so `ret` returns through x30.
-//   sp        not touched: the code needs no stack.
+//   x19, x20  callee-saved: only a function that calls itself uses them, for its base and the
+//             context, which must survive its own calls. It saves and restores them.
+//   x21..x28  callee-saved; not used.
+//   x29, x30  frame pointer and return address.
+//   sp        moved only by a function that calls itself.
 //
-// The code is a leaf (it calls nothing) that uses only registers the caller already expects to
-// lose, so it needs no prologue or epilogue at all: no frame record is pushed and the stack
+// A function that makes no call is a leaf that uses only registers the caller already expects
+// to lose, so it needs no prologue or epilogue at all: no frame record is pushed and the stack
 // pointer never moves, which also keeps the 16-byte stack alignment rule trivially satisfied.
 // A debugger or profiler sees the VM's frame as the caller through x30, as for any C leaf
-// function.
+// function. A function that calls itself is an ordinary non-leaf function instead: its
+// prologue pushes x19/x20 and a frame record (x29, x30), 32 bytes, and every exit pops them.
 //
 // The VM's registers stay in memory (notes D3): every instruction loads its operands from the
 // frame and stores its result back to the frame, so at any instruction boundary the frame holds
@@ -251,6 +318,31 @@ std::optional<Rejection> check_whitelist(const RegChunk& chunk) {
 // RETURN and RETURN_NIL also just return their own index: the VM executes the return itself
 // (closing upvalues, popping the frame), so the JIT never needs to know how frames work.
 //
+// Self-calls (issue #25, notes D7). `GET_GLOBAL r, "<own name>"` loads the global's cell, whose
+// address the engine looked up before compiling. `CALL r` then checks, before it writes
+// anything, that r holds a closure of this very function (the global may have been reassigned),
+// that the VM's frame limit and register file have room, and that the argument count is the
+// arity; if not, it exits at the CALL and the VM makes the call itself, errors included. Then it
+// does what the VM's call does: saves its own pc (the instruction after the CALL) in its
+// CallFrame, pushes the callee's CallFrame onto the VM's frame stack, sets the callee's
+// registers above its arguments to nil, and branches with BL to its own entry. Because the
+// frames live in the VM's own array, the VM sees exactly the stack it would have built.
+//
+// The callee returns a bytecode index like any exit. A RETURN's index means it returned: the
+// caller copies the result from the callee's window into its register A (the VM would have done
+// that) and pops the frame. Any other index is a failed check inside the callee: the caller
+// stores that index as the callee's pc and returns kNestedBailout, and so does every caller
+// above it, without touching its own frame (its pc is already after its CALL). The VM then
+// resumes the newest frame where the check failed, and when that frame returns, its callers
+// continue in the VM from after their CALLs. No machine code ever runs again for those calls,
+// which is correct because the frames hold exactly the VM's state at every instruction boundary.
+//
+// Nothing in a self-call allocates, so the collector cannot run while machine code does. The
+// frames pushed by machine code are ordinary VM frames (closure, pc, base, registers above the
+// arguments set to nil), so the collector marks them like any other after the VM resumes.
+// Closing upvalues on return is not needed: a compiled function cannot create a closure, so no
+// open upvalue can point into a frame that machine code pushed.
+
 // Arrays and the garbage collector (issue #26). An array access holds raw pointers in machine
 // registers: the array object's address and the address of its element 0. The invariant that
 // makes that safe: **no raw heap pointer stays in a machine register past the end of the
@@ -289,6 +381,8 @@ constexpr XReg kIndex = X10;                  // an array index, sign-extended (
 constexpr XReg kArray = X13;                  // the array's address (its Obj*)
 constexpr XReg kElements = X14;               // the address of its element 0
 constexpr XReg kLength = X15;                 // its length, in elements
+constexpr XReg kSavedBase = X19;              // base, kept across a self-call
+constexpr XReg kContext = X20;                // the JitContext, kept across a self-call
 
 constexpr WReg w(XReg x) { return static_cast<WReg>(static_cast<std::uint8_t>(x)); }
 
@@ -298,21 +392,32 @@ constexpr std::uint32_t slot_offset(std::uint32_t reg) {
 
 class CodeGen {
 public:
-    explicit CodeGen(const RegChunk& chunk) : chunk_(chunk) {
+    CodeGen(const RegChunk& chunk, const SelfCall* self) : chunk_(chunk), self_(self) {
         const std::size_t count = chunk.code.size();
         labels_.reserve(count);
-        for (std::size_t i = 0; i < count; ++i) labels_.push_back(e_.make_label());
+        for (std::size_t i = 0; i < count; ++i) {
+            labels_.push_back(e_.make_label());
+            const RegOp op = unfused_op(chunk.code[i]);
+            if (op == RegOp::Call) calls_ = true;
+            if (op == RegOp::IndexGet || op == RegOp::IndexSet) arrays_ = true;
+            if (op == RegOp::Return || op == RegOp::ReturnNil) returns_.push_back(i);
+        }
         exits_.resize(count);
     }
 
     GeneratedCode run() {
         GeneratedCode out;
-        // Entry: the four constants the instructions share. Each is one MOVZ.
-        e_.mov_imm(kIntTag, nanbox::kIntTag);
-        e_.mov_imm(kIntTagHigh, static_cast<std::uint32_t>(nanbox::kIntTag >> 32));
-        e_.mov_imm(kFalseBits, nanbox::kFalse);
-        e_.mov_imm(kNilBits, nanbox::kNil);
-        if (uses_arrays()) e_.mov_imm(kObjTag, nanbox::kObjTag);  // one MOVZ as well
+        e_.bind(entry_);  // a self-call branches here
+        if (calls_) {
+            // Save the callee-saved registers this function uses, then a frame record, so the
+            // stack stays 16-byte aligned and x29 chains to the caller's frame for debuggers.
+            e_.stp_pre(kSavedBase, kContext, SP, -16);
+            e_.stp_pre(X29, X30, SP, -16);
+            e_.mov(X29, SP);
+            e_.mov(kSavedBase, kBase);
+            e_.mov(kContext, X1);  // before x1 becomes the int tag
+        }
+        load_constants();
         for (std::size_t i = 0; i < chunk_.code.size(); ++i) {
             e_.bind(labels_[i]);
             out.starts.push_back(e_.code().size());
@@ -324,24 +429,201 @@ public:
             e_.bind(*exits_[i]);
             exit_with(i);
         }
+        if (nested_exit_) {
+            e_.bind(*nested_exit_);
+            epilogue();
+            e_.mov_imm(W0, kNestedBailout);
+            e_.ret();
+        }
         e_.finish();
         out.words = e_.code();
         return out;
     }
 
 private:
-    bool uses_arrays() const {
-        for (Instruction insn : chunk_.code) {
-            const RegOp op = unfused_op(insn);
-            if (op == RegOp::IndexGet || op == RegOp::IndexSet) return true;
-        }
-        return false;
+    // The constants the instructions share, each one MOVZ. Set up on entry, and again after a
+    // self-call, which may have used these registers.
+    void load_constants() {
+        e_.mov_imm(kIntTag, nanbox::kIntTag);
+        e_.mov_imm(kIntTagHigh, static_cast<std::uint32_t>(nanbox::kIntTag >> 32));
+        e_.mov_imm(kFalseBits, nanbox::kFalse);
+        e_.mov_imm(kNilBits, nanbox::kNil);
+        if (arrays_ || calls_) e_.mov_imm(kObjTag, nanbox::kObjTag);
     }
 
-    // `mov w0, #index; ret`: back to the VM, which resumes at bytecode instruction `index`.
+    // Undoes the prologue of a function that calls itself; nothing for a leaf.
+    void epilogue() {
+        if (!calls_) return;
+        e_.ldp_post(X29, X30, SP, 16);
+        e_.ldp_post(kSavedBase, kContext, SP, 16);
+    }
+
+    // `mov w0, #index; ret`: back to the VM (or to a calling copy of this function), which
+    // resumes at bytecode instruction `index`.
     void exit_with(std::size_t index) {
+        epilogue();
         e_.mov_imm(W0, static_cast<std::uint32_t>(index));
         e_.ret();
+    }
+
+    // The shared exit that returns kNestedBailout, made on first use.
+    Label nested_exit() {
+        if (!nested_exit_) nested_exit_ = e_.make_label();
+        return *nested_exit_;
+    }
+
+    // d = n + bytes, for any byte count. d must not be n.
+    void add_bytes(XReg d, XReg n, std::uint64_t bytes) {
+        if (bytes <= 4095) {
+            e_.add_imm(d, n, static_cast<std::uint32_t>(bytes));
+        } else {
+            e_.mov_imm(d, bytes);
+            e_.add(d, n, d);
+        }
+    }
+
+    // The address of bytecode instruction `index`, as the VM keeps it in a CallFrame's pc.
+    std::uint64_t code_address(std::size_t index) const {
+        return reinterpret_cast<std::uint64_t>(chunk_.code.data() + index);
+    }
+
+    // kTmp = &frames[*frame_count + adjust] (adjust is 0 for the next free frame, -1 for the
+    // newest), with the frame count's address in x13 and the count in x14.
+    void frame_address(XReg dst, int adjust) {
+        e_.ldr(X13, kContext, static_cast<std::uint32_t>(offsetof(JitContext, frame_count)));
+        e_.ldr(X14, X13);
+        e_.ldr(dst, kContext, static_cast<std::uint32_t>(offsetof(JitContext, frames)));
+        e_.mov_imm(kResult, kFrameBytes);
+        e_.madd(dst, X14, kResult, dst);
+        if (adjust < 0) e_.sub_imm(dst, dst, kFrameBytes);
+    }
+
+    // CALL A, B with the callee in register A and B arguments above it (see "Self-calls"
+    // above). Every check comes before the first write, so a failed one leaves everything as it
+    // was and the VM makes the call itself.
+    void self_call(std::size_t index, Instruction insn) {
+        const std::uint32_t a = insn_a(insn);
+        const int arity = self_->function->arity;
+        if (static_cast<int>(insn_b(insn)) != arity) {
+            e_.b(exit_label(index));  // the VM raises the arity error
+            return;
+        }
+        const auto frame_size = static_cast<std::uint32_t>(chunk_.frame_size);
+        const Label fail = exit_label(index);
+
+        // The callee is a closure of this function: an object, a closure, and its function.
+        constexpr XReg kCallee = kB;
+        e_.ldr(kCallee, kBase, slot_offset(a));
+        e_.eor(kCallee, kCallee, kObjTag);
+        e_.lsr(kTmp, kCallee, 48);
+        e_.cbnz(kTmp, fail);                           // not an object
+        e_.ldrb(w(kTmp), kCallee, closure_layout().kind);
+        e_.cmp_imm(w(kTmp), static_cast<std::uint32_t>(ObjKind::Closure));
+        e_.b_cond(Cond::NE, fail);                     // an object, but not a closure
+        e_.ldr(kTmp, kCallee, closure_layout().function);
+        e_.mov_imm(kResult, reinterpret_cast<std::uint64_t>(self_->function));
+        e_.cmp(kTmp, kResult);
+        e_.b_cond(Cond::NE, fail);                     // a closure of another function
+
+        // Room for one more frame (the VM's 10,000-call limit, notes §2.4).
+        e_.ldr(X13, kContext, static_cast<std::uint32_t>(offsetof(JitContext, frame_count)));
+        e_.ldr(X14, X13);
+        e_.ldr(X15, kContext, static_cast<std::uint32_t>(offsetof(JitContext, frame_limit)));
+        e_.cmp(X14, X15);
+        e_.b_cond(Cond::HS, fail);
+        // Room for the callee's whole window in the register file (see call_value).
+        constexpr XReg kNewBase = kC;
+        add_bytes(kNewBase, kBase, slot_offset(a + 1));
+        add_bytes(kTmp, kNewBase, slot_offset(frame_size));
+        e_.ldr(X15, kContext, static_cast<std::uint32_t>(offsetof(JitContext, register_end)));
+        e_.cmp(kTmp, X15);
+        e_.b_cond(Cond::HI, fail);
+
+        // The writes. x13 still holds &frame_count and x14 the count.
+        e_.ldr(X15, kContext, static_cast<std::uint32_t>(offsetof(JitContext, frames)));
+        e_.mov_imm(kResult, kFrameBytes);
+        e_.madd(X15, X14, kResult, X15);               // the callee's frame
+        e_.sub_imm(kTmp, X15, kFrameBytes);            // this function's frame
+        e_.mov_imm(kResult, code_address(index + 1));  // resume after the CALL, as SAVE_STATE
+        e_.str(kResult, kTmp, kFramePcOffset);
+        e_.str(kCallee, X15, kFrameClosureOffset);
+        e_.mov_imm(kResult, code_address(0));
+        e_.str(kResult, X15, kFramePcOffset);
+        e_.str(kNewBase, X15, kFrameBaseOffset);
+        e_.add_imm(X14, X14, 1);
+        e_.str(X14, X13);
+        // The callee's registers above its arguments start as nil, as call_value makes them, so
+        // the collector never reads a stale slot.
+        const auto first = static_cast<std::uint32_t>(arity);
+        if (frame_size - first <= 8) {
+            for (std::uint32_t r = first; r < frame_size; ++r) {
+                e_.str(kNilBits, kNewBase, slot_offset(r));
+            }
+        } else {
+            add_bytes(kTmp, kNewBase, slot_offset(first));
+            add_bytes(kResult, kNewBase, slot_offset(frame_size));
+            const Label loop = e_.make_label();
+            e_.bind(loop);
+            e_.str(kNilBits, kTmp);
+            e_.add_imm(kTmp, kTmp, 8);
+            e_.cmp(kTmp, kResult);
+            e_.b_cond(Cond::LO, loop);
+        }
+
+        e_.mov(kBase, kNewBase);
+        e_.mov(X1, kContext);
+        e_.bl(entry_);
+        constexpr XReg kResume = kB;
+        e_.mov(w(kResume), W0);  // a W move zeroes the high half: the index as 64 bits
+        e_.mov(kBase, kSavedBase);
+        load_constants();
+
+        // A failed check in a call the callee made: pass it on.
+        e_.adds_imm(WZR, w(kResume), 1);               // CMN: kResume == 0xFFFF'FFFF?
+        e_.b_cond(Cond::EQ, nested_exit());
+        // A RETURN: the callee finished.
+        std::vector<Label> returned;
+        for (std::size_t r : returns_) {
+            returned.push_back(e_.make_label());
+            if (r <= 4095) {
+                e_.cmp_imm(w(kResume), static_cast<std::uint32_t>(r));
+            } else {
+                e_.mov_imm(w(kTmp), static_cast<std::uint32_t>(r));
+                e_.cmp(w(kResume), w(kTmp));
+            }
+            e_.b_cond(Cond::EQ, returned.back());
+        }
+        // Anything else is a failed check in the callee itself, at that index: it becomes the
+        // callee's pc, and the VM resumes there.
+        static_assert(sizeof(Instruction) == 8, "an index becomes a pc offset with LSL #3");
+        e_.lsl(kTmp, kResume, 3);
+        e_.mov_imm(kResult, code_address(0));
+        e_.add(kTmp, kResult, kTmp);
+        frame_address(X15, -1);
+        e_.str(kTmp, X15, kFramePcOffset);
+        e_.b(nested_exit());
+
+        // Copy the result into register A, as the VM's RETURN does (`base[-1] = result`), from
+        // the callee's window, which is still intact, then pop the callee's frame.
+        const Label popped = e_.make_label();
+        for (std::size_t k = 0; k < returns_.size(); ++k) {
+            e_.bind(returned[k]);
+            const Instruction ret = chunk_.code[returns_[k]];
+            if (unfused_op(ret) == RegOp::ReturnNil) {
+                e_.mov(kResult, kNilBits);
+            } else if ((insn_flags(ret) & kFlagBConst) != 0) {
+                e_.mov_imm(kResult, value_bits(chunk_.constants[insn_b(ret)]));
+            } else {
+                e_.ldr(kResult, kBase, slot_offset(a + 1 + insn_b(ret)));
+            }
+            e_.str(kResult, kBase, slot_offset(a));
+            if (k + 1 < returns_.size()) e_.b(popped);
+        }
+        e_.bind(popped);
+        e_.ldr(X13, kContext, static_cast<std::uint32_t>(offsetof(JitContext, frame_count)));
+        e_.ldr(X14, X13);
+        e_.sub_imm(X14, X14, 1);
+        e_.str(X14, X13);
     }
 
     // The shared exit for a failed check in instruction `index`, made on first use.
@@ -575,6 +857,16 @@ private:
                 e_.str_scaled(kResult, kElements, kIndex);
                 return;
 
+            // The global's cell, read as it is now: it may hold anything, and the CALL checks.
+            case RegOp::GetGlobal:
+                e_.mov_imm(kTmp, reinterpret_cast<std::uint64_t>(self_->global));
+                e_.ldr(kB, kTmp);
+                e_.str(kB, kBase, slot_offset(insn_a(insn)));
+                return;
+            case RegOp::Call:
+                self_call(i, insn);
+                return;
+
             case RegOp::Return:
             case RegOp::ReturnNil:
                 exit_with(i);
@@ -589,14 +881,22 @@ private:
     }
 
     const RegChunk& chunk_;
+    const SelfCall* self_;                    // null unless the function may call itself
     Emitter e_;
+    Label entry_ = e_.make_label();           // the function's first instruction
     std::vector<Label> labels_;               // one per bytecode instruction
     std::vector<std::optional<Label>> exits_;  // bail-out exits, per bytecode instruction
+    std::optional<Label> nested_exit_;        // returns kNestedBailout
+    std::vector<std::size_t> returns_;        // indices of the RETURN / RETURN_NIL instructions
+    bool calls_ = false;                      // has a CALL, so it needs a prologue
+    bool arrays_ = false;                     // reads or writes an array element
 };
 
 }  // namespace
 
-GeneratedCode generate(const RegChunk& chunk) { return CodeGen(chunk).run(); }
+GeneratedCode generate(const RegChunk& chunk, const SelfCall* self) {
+    return CodeGen(chunk, self).run();
+}
 
 #endif  // RUNG_NANBOX
 

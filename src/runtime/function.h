@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -10,11 +11,23 @@
 
 namespace rung {
 
+// What machine code needs from the register VM to make a call itself (issue #25, notes D7):
+// the VM's call frames, so a call made in machine code pushes a frame the VM can see, and the
+// limits the VM checks before a call. Built by the VM for each entry into machine code. A
+// function that makes no call never reads it.
+struct JitContext {
+    void* frames;              // the VM's CallFrame array (layout fixed in jit_compiler.h)
+    std::size_t* frame_count;  // the VM's frame count; machine code bumps it for each call
+    std::size_t frame_limit;   // a call made with this many frames overflows the stack
+    Value* register_end;       // one past the register file: a callee's window must end by here
+};
+
 // Machine code the baseline JIT produced for one function (notes D16). It takes the frame's
 // register 0 (`base`) and returns the index of the bytecode instruction the register VM resumes
 // at: a RETURN / RETURN_NIL when the code ran to the end, or the instruction whose type guard or
-// zero-divisor check failed.
-using JitEntry = std::uint32_t (*)(Value* base);
+// zero-divisor check failed. A function that calls itself can also return
+// jit::kNestedBailout: a check failed in a call it made, and the VM resumes the newest frame.
+using JitEntry = std::uint32_t (*)(Value* base, const JitContext* context);
 
 // Where a function stands with the JIT, as the engine's own thread sees it. Only --engine=jit
 // changes it, and only that thread reads or writes it (the background compiler never does).
@@ -57,6 +70,11 @@ struct ObjFunction : Obj {
     // instruction cache flushed; the engine's thread reads it with an acquire load before every
     // call, so seeing the pointer guarantees seeing the code it points to.
     std::atomic<JitEntry> jit_entry{nullptr};
+    // The cell of the global named like this function, or null if there is none. The engine's
+    // thread looks it up just before the function is compiled or queued, so the compiler (on
+    // either thread) never touches the globals table. It lets the machine code read the global
+    // to call itself (issue #25); the cell never moves (see RegisterEngine::globals_).
+    const Value* jit_self_global = nullptr;
 
     explicit ObjFunction(ObjString* n) : Obj(ObjKind::Function), name(n) {}
 };

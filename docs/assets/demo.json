@@ -5,9 +5,11 @@
   "example_sha256": {
     "hot_loop.rg": "49afcade31ba7fd20614068f795d95854c3982af4f9c339ea2479a6d9eba3d0e",
     "bytecode.rg": "d56156aa76a9919026fe2a0855a2d8de3f8c12b6718f8c8fe435c23a6b909620",
-    "jit_fallback.rg": "ff87efc29add49f28e202ba771ae32e22036e7d93ffb92970ecdf157c59e5ad3"
+    "jit_fallback.rg": "ff87efc29add49f28e202ba771ae32e22036e7d93ffb92970ecdf157c59e5ad3",
+    "recursion.rg": "2ecd5b38c63ea89bcfc04be709c684367c3c3b2b07729fbc2356291651df9cf4",
+    "recursive_fallback.rg": "0f851b023dc9b3ea0ffc75326a6c9f5a56d14b32921bbd9d0fdfbd8979481170"
   },
-  "presentation": "Real command output; compiler durations omitted. Playback is paced for reading, not execution time.",
+  "presentation": "Real command output; compile durations and native code sizes omitted. Playback is paced for reading, not execution time.",
   "records": [
     {
       "section": "engines",
@@ -71,7 +73,7 @@
       "caption": "Default threshold: first call heats up; second call enters compiled code.",
       "command": "rung --engine=jit --jit-log examples/hot_loop.rg",
       "stdout": "994657\n994657\n",
-      "stderr": "[jit] compiled sum: 10 bytecode instructions -> 67 machine instructions (268 bytes)\n"
+      "stderr": "[jit] compiled sum: 10 bytecode instructions\n"
     },
     {
       "section": "jit",
@@ -79,7 +81,23 @@
       "caption": "Threshold 1 for this example: add(20, 22), then add(20, 2.5).",
       "command": "rung --engine=jit --jit-threshold=1 --jit-log examples/jit_fallback.rg",
       "stdout": "42\n22.5\n",
-      "stderr": "[jit] compiled add: 3 bytecode instructions -> 21 machine instructions (84 bytes)\n[jit] bail-out in add at instruction 0 (ADD, line 4)\n"
+      "stderr": "[jit] compiled add: 3 bytecode instructions\n[jit] bail-out in add at instruction 0 (ADD, line 4)\n"
+    },
+    {
+      "section": "recursion",
+      "title": "Recursive calls enter native code",
+      "caption": "fib(20): both recursive calls use the function's own ARM64 entry.",
+      "command": "rung --engine=jit --jit-threshold=1 --jit-log examples/recursion.rg",
+      "stdout": "6765\n",
+      "stderr": "[jit] compiled fib: 12 bytecode instructions\n"
+    },
+    {
+      "section": "recursion",
+      "title": "A bailout four calls deep",
+      "caption": "A float fails a guard in the innermost call; the VM finishes all five frames.",
+      "command": "rung --engine=jit --jit-threshold=1 --jit-log examples/recursive_fallback.rg",
+      "stdout": "7\n6.5\n",
+      "stderr": "[jit] compiled tally: 13 bytecode instructions\n[jit] bail-out in tally at instruction 4 (ADD, line 7)\n"
     }
   ]
 }

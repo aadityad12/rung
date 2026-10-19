@@ -177,6 +177,24 @@ class BenchEndToEndTest(unittest.TestCase):
         self.assertGreater(alpha["peak_rss_bytes_max"], 0)
         self.assertEqual(self.results("02_slow")["benchmarks"]["beta"]["median_total_ns"], 16000)
 
+    def test_jit_measurements_keep_their_coverage_when_the_compiler_changes(self):
+        path = os.path.join(self.root, "scripts", "ladder_configs.json")
+        with open(path, encoding="utf-8") as f:
+            configs = json.load(f)
+        configs[0]["args"][0] = "--engine=jit"
+        write(path, json.dumps(configs))
+        coverage_path = os.path.join(self.root, "bench", "jit_not_compiled.json")
+        write(coverage_path, json.dumps({"beta": "calls were unsupported"}))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "JIT fixture")
+        code, _, err = self.run_bench("--configs", "01_fast")
+        self.assertEqual(code, 0, err)
+        measured = self.results("01_fast")
+        write(coverage_path, "{}")  # a later compiler supports beta
+        self.assertEqual(ladder.load_not_jit_compiled(self.root, measured),
+                         {"beta": "calls were unsupported"})
+        self.assertEqual(ladder.load_not_jit_compiled(self.root), {})
+
     def test_subset_selection(self):
         code, _, err = self.run_bench("--configs", "02_slow", "--benchmarks", "beta")
         self.assertEqual(code, 0, err)
@@ -366,6 +384,17 @@ class LadderTest(unittest.TestCase):
         self.assertIn("| `02_b` Faster | 5.00× | 2.00× |", text)
         self.assertIn("‡ marks a JIT row's cell", text)
         self.assertIn("`beta`: rejected for a reason", text)
+
+    def test_historical_jit_coverage_uses_the_measured_commit(self):
+        write(os.path.join(self.root, "bench", "jit_not_compiled.json"), "{}")
+        write(os.path.join(self.root, "bench", "jit_coverage_history.json"),
+              json.dumps({"older": {"beta": "not compiled in that revision"}}))
+        self.assertEqual(ladder.load_not_jit_compiled(self.root, {"meta": {"commit": "older"}}),
+                         {"beta": "not compiled in that revision"})
+        self.assertEqual(ladder.load_not_jit_compiled(self.root, {"meta": {"commit": "newer"}}), {})
+        # An explicit empty snapshot is meaningful, and must not fall back to history.
+        self.assertEqual(ladder.load_not_jit_compiled(
+            self.root, {"meta": {"commit": "older", "jit_not_compiled": {}}}), {})
 
     def test_background_comparison_is_its_own_table(self):
         # Configurations marked "ladder": false (notes D8's sync / background pair) get a table

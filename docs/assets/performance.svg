@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="706" viewBox="0 0 960 706" role="img" aria-labelledby="title desc">
 <title id="title">Speedup over the tree-walker across six benchmarks</title>
-<desc id="desc">Stack VM, register VM and JIT configurations. The JIT compiles only loop_sum; outlined bars mean VM fallback. Higher is faster.</desc>
+<desc id="desc">Stack VM, register VM and JIT configurations. Native compilation in loop_sum; outlined bars mean VM fallback. Higher is faster.</desc>
 <rect width="960" height="706" rx="16" fill="#f5f8fc"/>
 <g font-family="system-ui, sans-serif" fill="#172235">
 <text x="30" y="38" font-size="23" font-weight="700">What each engine buys you</text>

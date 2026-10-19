@@ -147,6 +147,12 @@ it and why. `RESOLVED` marks an open question that has been answered.
   machine code, guarded by a cheap check that the global still points to the same function
   (bail out if it was reassigned).
 - `loop_sum` is the one benchmark the JIT is guaranteed to cover.
+- **Done (issue #25).** Direct self-recursion compiles, as planned: `GET_GLOBAL` of the
+  function's own name and `CALL` are in the whitelist, the call checks that the global still holds
+  a closure of this function, and the machine code calls its own entry with `BL`. How it keeps
+  the VM's frames consistent and recovers from a failed check several calls deep is in D16,
+  *Self-calls*. `fib` now compiles; remeasurement of its JIT row is pending. The stored
+  timings still describe the earlier implementation.
 
 ### D8. Background compilation (Engine 5): measure before promising. `DECIDED` (2026-09-20)
 
@@ -549,8 +555,9 @@ it. Code: `src/jit/jit_compiler.{h,cpp}` (whitelist and code generation),
   `EQ NE LT LE GT GE` (operands: registers or int constants), `JUMP JUMP_IF_FALSE JUMP_IF_TRUE`,
   `RETURN` (of a register or an int, nil or bool constant) and `RETURN_NIL`, and its frame has at
   most 4096 registers. Globals, upvalues, closures, calls, `print`, arrays, `!`, string or float
-  constants: the function is rejected and logged, and stays in the VM. `fib` is rejected (it
-  reads the global `fib`, D7); `loop_sum` compiles.
+  constants: the function is rejected and logged, and stays in the VM. `loop_sum` compiles.
+  Two later additions: one array element read or write (issue #26), and a call to itself through
+  its own global (issue #25, *Self-calls* below), which is how `fib` compiles.
 - **Code shape.** Registers stay in memory (D3): every bytecode instruction becomes "load the
   operands from `[base + r*8]`, check them, compute, box, store to `[base + a*8]`". Nothing is
   kept in machine registers across instructions, so at every instruction boundary the frame
@@ -605,6 +612,48 @@ it. Code: `src/jit/jit_compiler.{h,cpp}` (whitelist and code generation),
   `results/<row>.json`, so the JIT row can report what compiling cost next to what it saved.
   Compile time counts the whitelist check, code generation, and mapping and writing the
   executable memory, for rejected functions too.
+
+- **Self-calls** (issue #25, D7). The entry is `uint32_t f(Value* base, const JitContext* ctx)`;
+  the context gives the VM's `CallFrame` array, the address of its frame count, the frame limit
+  (10,000 plus the uncounted script frame) and the end of the register file. Only a function with
+  a `CALL` reads it.
+  - *Whitelist.* `GET_GLOBAL` only of the function's own name, and only if that global exists
+    when the function gets hot: the engine's thread looks the cell up then
+    (`ObjFunction::jit_self_global`), so the compiler, possibly on the background thread, never
+    touches the globals table. `CALL` only in a function that reads its own global (one that only
+    calls what it was passed would fail its check on every call), with a frame of at most 2047
+    registers, so the caller can read the callee's result register (A + 1 + B) with one `LDR`.
+  - *The call.* `GET_GLOBAL` loads the cell's current value. `CALL` checks, before writing
+    anything, that R[A] is a closure whose function is this one (the global may have been
+    reassigned, or never been this function), that there is room for one more frame and for the
+    callee's window, and that the argument count is the arity; a failed check exits at the
+    `CALL` and the VM makes the call itself, so `stack overflow`, `can only call functions` and
+    arity errors come from the VM with its message and line. Then it does what `call_value`
+    does: stores its own pc (the instruction after the `CALL`) in its `CallFrame`, writes the
+    callee's `CallFrame`, increments the frame count, sets the callee's registers above its
+    arguments to nil, and `BL`s to its own first instruction with the new base. Frame layout:
+    `vm_reg.h` checks it against `jit_compiler.h` with `static_assert`s.
+  - *The return.* The callee's exit returns a bytecode index as always. If it is one of the
+    function's `RETURN` / `RETURN_NIL` indices (known at compile time), the caller copies the
+    result from the callee's window into R[A] (what the VM's `base[-1] = result` does), pops the
+    frame and goes on. No upvalues need closing: a compiled function cannot create a closure.
+  - *A failed check in a nested call.* Any other index is a check that failed in the callee, which
+    left its frame exactly as the VM would have it before that instruction. The caller stores
+    that instruction's address as the callee's pc and returns `kNestedBailout` (`0xFFFFFFFF`),
+    and every machine-code caller above it passes that on unchanged: their own pcs already point
+    after their `CALL`s. The VM entry sees `kNestedBailout`, logs the bail-out against the newest
+    frame and reloads it. The innermost call resumes at the failed instruction, and when it
+    returns, its callers continue in the VM after their calls. Those calls never re-enter
+    machine code; later calls do.
+  - *Registers and stack.* A function with a call is no longer a leaf: its prologue pushes
+    x19/x20 (base and context, kept across its calls) and a frame record, 32 bytes per
+    activation, and every exit pops them. 10,000 nested activations use 320 KB of the engine
+    thread's 512 MB stack (D12). The constants in x1-x5 are reloaded after each call.
+  - *The collector* cannot run while machine code does (nothing compiled allocates), and every
+    frame machine code pushes is an ordinary VM frame with nil above its arguments, so
+    `mark_roots` treats it like any other once the VM is running again.
+  - *Not done:* calls to any other function, natives, or closures; keeping arguments in machine
+    registers; a direct return-value convention instead of comparing the returned index.
 
 **Details chosen while implementing.**
 - *The VM loop is a template, `execute_loop<bool kJit>`.* The JIT's two hooks (counting and
@@ -927,7 +976,11 @@ How D5's noise control became code, and the choices D5 left open:
   a compile-time table, from the `jit_compile_ns` that `rung --bench` reports, and a `‡` on every
   cell of a benchmark in which the JIT compiles nothing (`bench/jit_not_compiled.json`; the
   `bench-jit-coverage` ctest checks that list against `rung --jit-log` in the
-  `release-goto-nanbox` build, so the mark cannot outlive what the JIT does).
+  `release-goto-nanbox` build). New JIT measurements snapshot that coverage in
+  `meta.jit_not_compiled`. For the older October 8 results, `bench/jit_coverage_history.json`
+  preserves the previous coverage keyed by their recorded source commit. The table and chart
+  use the measured revision's coverage, so adding a feature cannot relabel old VM timings as
+  native-code performance. The current compiler's coverage is tested independently.
 - **Configurations that are not ladder rows.** An entry in `scripts/ladder_configs.json` with
   `"ladder": false` (the background-compilation pair, D8) is measured by `bench.py` like any
   other, but `ladder.py` keeps it out of the speedup tables and the summary and shows it in its
@@ -2060,3 +2113,38 @@ LLVM assembler like every other encoding).
   `ExecBuffer` puts 16 zero bytes in front of the code (zeros mean "no signature", so the check
   passes), so every caller of `entry()` is protected. Found by looping the test 300 to 600
   times in CI; a single run passed most of the time.
+
+
+### Direct self-recursion (issue #25)
+
+**Expected:** a function that reads its own global and calls itself can use a direct ARM64
+`BL`, while preserving the VM's register windows and language-level call limit. A changed
+callee or failed guard must resume in the VM, including when the failure is several calls deep.
+
+**Implemented:** D16's self-call protocol. The regression suite covers the return forms,
+wrong arity, non-function and reassigned callees, nested arithmetic fallback, error locations,
+and the depth limit. A further case invokes a callback at the bottom of native recursion: it
+allocates under GC stress and reassigns the recursive global before suspended callers resume.
+Those callers use the new function, and no already-completed expression is evaluated twice.
+The guided tour and generated clip show both native `fib` and nested fallback.
+
+**Failure found during implementation:** converting a returned bytecode index into a resume
+address initially used the wrong instruction width. Register instructions occupy eight bytes.
+The conversion now has a static assertion, and a regression test performs several additions
+before the failing operation so resuming at an earlier instruction changes the answer.
+
+**Measurement pending:** the implementation has not been benchmarked under D5's conditions.
+The stored JIT results are still from the earlier source revision; their fallback labels are
+preserved using the historical coverage manifest. No speedup for native recursive `fib` is
+claimed. Once the Mac is on AC power, Low Power Mode is off, and the machine is left idle,
+measure the register baseline and JIT configurations together from a clean source commit:
+
+```sh
+python3 scripts/bench.py --configs 08_fold 09_jit jit_sync jit_background
+python3 scripts/ladder.py
+python3 scripts/render_results.py
+```
+
+Review every noisy flag, update the performance discussion from those results, and complete
+cross-platform CI before merging. The extra baseline makes the new JIT comparison interleaved;
+comparisons with older ladder rows remain comparisons across sessions.

@@ -16,6 +16,10 @@
 
 #include "bytecode/register_code.h"
 
+namespace rung {
+struct ObjFunction;
+}
+
 namespace rung::jit {
 
 // Why a function stays in the register VM: the first instruction outside the whitelist, and
@@ -43,13 +47,50 @@ struct ArrayLayout {
 };
 const ArrayLayout& array_layout();
 
+// Where machine code finds a closure's function: a byte offset from the closure's address.
+// Measured once on a real ObjClosure, like array_layout. `usable` is false if the pointer is not
+// found exactly once at an offset one LDR reaches; then no function calls itself in machine code.
+struct ClosureLayout {
+    bool usable = false;
+    std::uint32_t kind = 0;      // the header's ObjKind byte
+    std::uint32_t function = 0;  // the ObjFunction pointer
+};
+const ClosureLayout& closure_layout();
+
+// Self-recursion (issue #25, notes D7). A function may call itself through the global that has
+// its name: `GET_GLOBAL r, "fib"` then `CALL r`. The machine code pushes the callee's frame onto
+// the VM's own frame stack, so if a check fails in a nested call the VM can resume exactly where
+// it failed. These describe the VM's frame for the machine code; vm_reg.h checks them against
+// RegisterEngine::CallFrame with static_asserts.
+constexpr std::uint32_t kFrameBytes = 24;          // sizeof(CallFrame)
+constexpr std::uint32_t kFrameClosureOffset = 0;   // ObjClosure* closure
+constexpr std::uint32_t kFramePcOffset = 8;        // const Instruction* pc
+constexpr std::uint32_t kFrameBaseOffset = 16;     // Value* base
+// Returned instead of a bytecode index when a check failed in a nested call. The innermost
+// failing frame's pc is already saved in its CallFrame, and every frame between it and the one
+// the VM entered has its pc after its CALL, so the VM just reloads the newest frame. No function
+// has 2^32 - 1 instructions, so it cannot be mistaken for an index.
+constexpr std::uint32_t kNestedBailout = 0xFFFF'FFFF;
+// The largest frame of a function that calls itself. After a call returns, the caller reads the
+// result from the callee's window, whose registers start A + 1 above its own: register A + 1 + B
+// must still be in one LDR's reach (4095), so both frames are kept below half of it.
+constexpr int kMaxSelfCallFrameSize = 2047;
+
+// What the compiler needs to know to compile a self-call, filled in by the JIT from the
+// function. Without it (null), globals and calls are rejected as before.
+struct SelfCall {
+    const ObjFunction* function;  // the function being compiled
+    const Value* global;          // the cell of the global with its name, or null
+};
+
 // Returns nothing if every instruction is one the JIT compiles: int arithmetic (+ - * / %,
 // unary -), the six comparisons, register moves, int / nil / bool constants, jumps, returns, and
-// reading or writing one array element (`a[i]`, `a[i] = v`; issue #26, notes D2). Anything that
-// touches a string or float constant, creates an array, uses a closure or upvalue, a global, a
-// call or `print` rejects the whole function (notes D7: `fib` calls itself through a global, so
-// it is rejected; so is `sieve`'s `run`, which calls the global native `array`).
-std::optional<Rejection> check_whitelist(const RegChunk& chunk);
+// reading or writing one array element (`a[i]`, `a[i] = v`; issue #26, notes D2), and, given
+// `self`, a call to itself through its own global (issue #25). Anything that touches a string
+// or float constant, creates an array, uses a closure or upvalue, any other global, any other
+// call or `print` rejects the whole function (so `sieve`'s `run`, which calls the global native
+// `array`, is rejected).
+std::optional<Rejection> check_whitelist(const RegChunk& chunk, const SelfCall* self = nullptr);
 
 // The opcode a word had before the superinstruction pass: a fused word's first half, else the
 // word's own opcode. The JIT compiles fused code as the unfused instructions (notes D16).
@@ -69,7 +110,7 @@ struct GeneratedCode {
 // Translates `chunk`, which must have passed check_whitelist. The function's calling
 // convention and the bail-out protocol are described in jit_compiler.cpp and notes D16. Throws
 // arm64::EmitError if the code cannot be encoded (a branch beyond B.cond's +-1 MiB reach).
-GeneratedCode generate(const RegChunk& chunk);
+GeneratedCode generate(const RegChunk& chunk, const SelfCall* self = nullptr);
 
 #endif  // RUNG_NANBOX
 

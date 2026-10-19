@@ -58,17 +58,21 @@ Jit::Built Jit::build(const ObjFunction& function) {
     using Clock = std::chrono::steady_clock;
     const Clock::time_point start = Clock::now();
     const RegChunk& chunk = function.reg;
+    // The global cell was looked up on the engine's thread before this function was compiled
+    // or queued (RegisterEngine::jit_count), and the queue's mutex orders that write before
+    // this read.
+    const SelfCall self{&function, function.jit_self_global};
 
     // Why the function stays in the VM, or empty if it compiles.
     std::string rejected_because;
     GeneratedCode code;
-    if (std::optional<Rejection> rejection = check_whitelist(chunk)) {
+    if (std::optional<Rejection> rejection = check_whitelist(chunk, &self)) {
         rejected_because = "instruction " + std::to_string(rejection->index) + " (" +
                            reg_opcode_name(unfused_op(chunk.code[rejection->index])) + ") " +
                            rejection->reason;
     } else {
         try {
-            code = generate(chunk);
+            code = generate(chunk, &self);
         } catch (const arm64::EmitError& error) {
             rejected_because = error.what();
         }

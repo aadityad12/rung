@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import sys
 
+from ladder import load_not_jit_compiled
+
 ROOT = Path(__file__).resolve().parents[1]
 DEST = ROOT / "docs/assets/performance.svg"
 
@@ -17,14 +19,15 @@ def render():
     load = lambda name: json.loads((ROOT / "results" / f"{name}.json").read_text())
     baseline = load("01_tree")
     data = {name: load(name) for name, _, _ in configs}
-    no_jit = json.loads((ROOT / "bench/jit_not_compiled.json").read_text())
+    no_jit = load_not_jit_compiled(ROOT, data["09_jit"])
     benchmarks = list(baseline["benchmarks"])
     height = 190 + 86 * len(benchmarks)
     svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="960" height="{height}" '
            f'viewBox="0 0 960 {height}" role="img" aria-labelledby="title desc">',
            '<title id="title">Speedup over the tree-walker across six benchmarks</title>',
-           '<desc id="desc">Stack VM, register VM and JIT configurations. The JIT compiles '
-           'only loop_sum; outlined bars mean VM fallback. Higher is faster.</desc>',
+           '<desc id="desc">Stack VM, register VM and JIT configurations. Native compilation in '
+           + escape(', '.join(b for b in benchmarks if b not in no_jit))
+           + '; outlined bars mean VM fallback. Higher is faster.</desc>',
            f'<rect width="960" height="{height}" rx="16" fill="#f5f8fc"/>',
            '<g font-family="system-ui, sans-serif" fill="#172235">',
            '<text x="30" y="38" font-size="23" font-weight="700">What each engine buys you</text>',
