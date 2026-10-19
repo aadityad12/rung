@@ -27,6 +27,18 @@ How to read these tables:
   one short call: p99 fell from 0.89 ms to 0.28 ms. On the six main benchmarks it did not give a
   consistent tail-latency improvement. The background pair was measured in the same session.
 
+## Isolating the JIT gain
+
+Unlike the full ladder's historical comparisons, these two configurations were measured
+in the same interleaved session on the same source revision. The baseline already includes
+constant folding and the register VM's other optimizations. The 1× line means equal speed;
+small differences around it should not be read as evidence of a substantial gain.
+
+![JIT speedup over the optimized register VM, with timings and explicit fallback markers](assets/jit-comparison.svg)
+
+Both results charts are generated from committed measurements by
+`python3 scripts/render_results.py`; `--check` verifies that neither has drifted.
+
 ## One rung up close: stack VM to register VM
 
 The register VM (`05_register` over `04_nanbox`) is the biggest single gain after leaving the

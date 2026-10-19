@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the README's SVG comparison from committed results; --check never writes files."""
+"""Generate the documentation's SVG comparisons from committed results; --check never writes files."""
 import argparse
 from html import escape
 import json
@@ -68,19 +68,67 @@ def render():
     return '\n'.join(svg) + '\n'
 
 
+def render_jit():
+    load = lambda name: json.loads((ROOT / "results" / f"{name}.json").read_text())
+    baseline, jit = load("08_fold"), load("09_jit")
+    for field in ("date", "commit", "cpu", "os", "iterations", "kept_runs", "seed"):
+        if baseline["meta"][field] != jit["meta"][field]:
+            raise ValueError(f"JIT comparison requires matching session metadata: {field}")
+    benchmarks = list(load("01_tree")["benchmarks"])
+    no_jit = load_not_jit_compiled(ROOT, jit)
+    per_call = lambda entry: entry["median_total_ns"] / entry["iterations"] / 1e6
+    ratios = {b: per_call(baseline["benchmarks"][b]) / per_call(jit["benchmarks"][b])
+              for b in benchmarks}
+    limit = max(2, int(max(ratios.values())) + 1)
+    start, scale = 150, 450 / limit
+    height = 230 + 55 * len(benchmarks)
+    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="960" height="{height}" '
+           f'viewBox="0 0 960 {height}" role="img" aria-labelledby="title desc">',
+           '<title id="title">JIT versus the optimized register VM, measured together</title>',
+           '<desc id="desc">Speedup on a shared linear scale. One times means equal speed. '
+           'Dashed bars indicate VM fallback. Rounded timings appear alongside each bar.</desc>',
+           f'<rect width="960" height="{height}" rx="16" fill="#f5f8fc"/>',
+           '<g font-family="system-ui, sans-serif" fill="#172235">',
+           '<text x="30" y="38" font-size="23" font-weight="700">Where native compilation helps</text>',
+           '<text x="30" y="65" font-size="14">08_fold → 09_jit · same source and measurement session · higher is faster</text>',
+           '<text x="30" y="92" font-size="13">Solid = native compilation · dashed = VM fallback</text>',
+           '<text x="700" y="120" font-size="13">VM → JIT (ms/call)</text>']
+    for tick in range(limit + 1):
+        x = start + tick * scale
+        svg += [f'<path d="M{x:.1f} 135 V{height-115}" stroke="{ "#8494aa" if tick == 1 else "#dce4ef" }"/>',
+                f'<text x="{x:.1f}" y="122" text-anchor="middle" font-size="12">{tick}×</text>']
+    for row, b in enumerate(benchmarks):
+        y = 148 + row * 55
+        ratio = ratios[b]
+        fallback = b in no_jit
+        fill = "#f5f8fc" if fallback else "#7966c7"
+        dash = ' stroke-dasharray="4 3"' if fallback else ''
+        svg += [f'<text x="30" y="{y+18}" font-size="15" font-weight="600">{escape(b)}</text>',
+                f'<rect x="{start}" y="{y}" width="{ratio*scale:.2f}" height="25" rx="3" fill="{fill}" stroke="#7966c7"{dash}/>',
+                f'<text x="{start+ratio*scale+8:.2f}" y="{y+18}" font-size="14">{ratio:.2f}×</text>',
+                f'<text x="700" y="{y+18}" font-size="14">{per_call(baseline["benchmarks"][b]):.2f} → {per_call(jit["benchmarks"][b]):.2f}</text>']
+    meta = jit["meta"]
+    svg += [f'<text x="30" y="{height-67}" font-size="13">{escape(meta["cpu"])} · {escape(meta["date"][:10])} · source {escape(meta["commit"][:7])}</text>',
+            f'<text x="30" y="{height-44}" font-size="12">Median process total / calls, including initial interpreted work. Not pooled p50.</text>',
+            f'<text x="30" y="{height-23}" font-size="12">Source: results/08_fold.json and results/09_jit.json. Near-parity differences include small regressions.</text>',
+            '</g></svg>']
+    return '\n'.join(svg) + '\n'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    svg = render()
-    if args.check:
-        if not DEST.exists() or DEST.read_text() != svg:
-            print("performance.svg is stale; run python3 scripts/render_results.py", file=sys.stderr)
-            return 1
-        print("performance.svg matches committed results")
-    else:
-        DEST.parent.mkdir(parents=True, exist_ok=True)
-        DEST.write_text(svg)
+    outputs = {DEST: render(), DEST.with_name("jit-comparison.svg"): render_jit()}
+    for dest, svg in outputs.items():
+        if args.check:
+            if not dest.exists() or dest.read_text() != svg:
+                print(f"{dest.name} is stale; run python3 scripts/render_results.py", file=sys.stderr)
+                return 1
+            print(f"{dest.name} matches committed results")
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(svg)
     return 0
 
 

@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560" role="img" aria-labelledby="title desc">
+<title id="title">JIT versus the optimized register VM, measured together</title>
+<desc id="desc">Speedup on a shared linear scale. One times means equal speed. Dashed bars indicate VM fallback. Rounded timings appear alongside each bar.</desc>
+<rect width="960" height="560" rx="16" fill="#f5f8fc"/>
+<g font-family="system-ui, sans-serif" fill="#172235">
+<text x="30" y="38" font-size="23" font-weight="700">Where native compilation helps</text>
+<text x="30" y="65" font-size="14">08_fold → 09_jit · same source and measurement session · higher is faster</text>
+<text x="30" y="92" font-size="13">Solid = native compilation · dashed = VM fallback</text>
+<text x="700" y="120" font-size="13">VM → JIT (ms/call)</text>
+<path d="M150.0 135 V445" stroke="#dce4ef"/>
+<text x="150.0" y="122" text-anchor="middle" font-size="12">0×</text>
+<path d="M240.0 135 V445" stroke="#8494aa"/>
+<text x="240.0" y="122" text-anchor="middle" font-size="12">1×</text>
+<path d="M330.0 135 V445" stroke="#dce4ef"/>
+<text x="330.0" y="122" text-anchor="middle" font-size="12">2×</text>
+<path d="M420.0 135 V445" stroke="#dce4ef"/>
+<text x="420.0" y="122" text-anchor="middle" font-size="12">3×</text>
+<path d="M510.0 135 V445" stroke="#dce4ef"/>
+<text x="510.0" y="122" text-anchor="middle" font-size="12">4×</text>
+<path d="M600.0 135 V445" stroke="#dce4ef"/>
+<text x="600.0" y="122" text-anchor="middle" font-size="12">5×</text>
+<text x="30" y="166" font-size="15" font-weight="600">fib</text>
+<rect x="150" y="148" width="408.66" height="25" rx="3" fill="#7966c7" stroke="#7966c7"/>
+<text x="566.66" y="166" font-size="14">4.54×</text>
+<text x="700" y="166" font-size="14">13.37 → 2.94</text>
+<text x="30" y="221" font-size="15" font-weight="600">loop_sum</text>
+<rect x="150" y="203" width="203.46" height="25" rx="3" fill="#7966c7" stroke="#7966c7"/>
+<text x="361.46" y="221" font-size="14">2.26×</text>
+<text x="700" y="221" font-size="14">30.22 → 13.37</text>
+<text x="30" y="276" font-size="15" font-weight="600">sieve</text>
+<rect x="150" y="258" width="87.98" height="25" rx="3" fill="#f5f8fc" stroke="#7966c7" stroke-dasharray="4 3"/>
+<text x="245.98" y="276" font-size="14">0.98×</text>
+<text x="700" y="276" font-size="14">16.66 → 17.04</text>
+<text x="30" y="331" font-size="15" font-weight="600">nbody</text>
+<rect x="150" y="313" width="89.74" height="25" rx="3" fill="#f5f8fc" stroke="#7966c7" stroke-dasharray="4 3"/>
+<text x="247.74" y="331" font-size="14">1.00×</text>
+<text x="700" y="331" font-size="14">33.17 → 33.27</text>
+<text x="30" y="386" font-size="15" font-weight="600">strcat</text>
+<rect x="150" y="368" width="90.45" height="25" rx="3" fill="#f5f8fc" stroke="#7966c7" stroke-dasharray="4 3"/>
+<text x="248.45" y="386" font-size="14">1.00×</text>
+<text x="700" y="386" font-size="14">134.04 → 133.37</text>
+<text x="30" y="441" font-size="15" font-weight="600">closures</text>
+<rect x="150" y="423" width="88.23" height="25" rx="3" fill="#f5f8fc" stroke="#7966c7" stroke-dasharray="4 3"/>
+<text x="246.23" y="441" font-size="14">0.98×</text>
+<text x="700" y="441" font-size="14">44.72 → 45.61</text>
+<text x="30" y="493" font-size="13">Apple M1 Pro · 2026-10-19 · source 358efb8</text>
+<text x="30" y="516" font-size="12">Median process total / calls, including initial interpreted work. Not pooled p50.</text>
+<text x="30" y="537" font-size="12">Source: results/08_fold.json and results/09_jit.json. Near-parity differences include small regressions.</text>
+</g></svg>

@@ -120,7 +120,8 @@ The ladder includes every regression, including NaN-boxing slowing all six bench
 Results come from one M1 Pro. Rows `08_fold`, `09_jit` and the background pair were measured
 together; comparisons against earlier rows, including the tree-walker, span sessions.
 
-**Read the investigations:** [why register bytecode dispatches fewer instructions](docs/performance.md#one-rung-up-close-stack-vm-to-register-vm),
+**Read the investigations:** [the JIT gain measured in one session](docs/performance.md#isolating-the-jit-gain),
+[why register bytecode dispatches fewer instructions](docs/performance.md#one-rung-up-close-stack-vm-to-register-vm),
 [what surprised me](docs/performance.md#what-surprised-me), and
 [methodology and limitations](docs/performance.md).
 

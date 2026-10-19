@@ -70,6 +70,12 @@ Each native call pushes an ordinary VM frame, so the VM can recover if a later g
 unwinds its machine stack while preserving the VM frames, and the VM resumes at that addition.
 It finishes the five frames and prints `6.5`; no earlier work is repeated.
 
+![Nested bailout preserves five VM frames, resumes the failed addition, and returns 6.5](assets/recursive-bailout.svg)
+
+The diagram shows control flow, not timing. The native machine stack unwinds, but the VM's
+saved frames retain both the leaf's local values and each caller's pending addition.
+
+
 ```sh
 python3 scripts/demo.py --rung build/release-goto-nanbox/rung --section recursion
 ```
