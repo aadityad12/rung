@@ -151,8 +151,8 @@ it and why. `RESOLVED` marks an open question that has been answered.
   function's own name and `CALL` are in the whitelist, the call checks that the global still holds
   a closure of this function, and the machine code calls its own entry with `BL`. How it keeps
   the VM's frames consistent and recovers from a failed check several calls deep is in D16,
-  *Self-calls*. `fib` now compiles; remeasurement of its JIT row is pending. The stored
-  timings still describe the earlier implementation.
+  *Self-calls*. `fib` now compiles; the October 19 interleaved measurements in §5 record
+  the new implementation alongside the optimized register baseline.
 
 ### D8. Background compilation (Engine 5): measure before promising. `DECIDED` (2026-09-20)
 
@@ -991,29 +991,27 @@ How D5's noise control became code, and the choices D5 left open:
 
 ### How the recorded rows were taken (read before comparing rows)
 
-- Rows `01_tree` to `08_fold` were measured on 2026-10-07 and row `09_jit` on 2026-10-08, all on
-  the Apple M1 Pro of D5, on AC power, from a clean tree, 10 runs of 20 `run()` calls each (the
-  Provenance table in the README).
-- **Four invocations of `bench.py`, not one.** Each results file records when it was taken,
-  and the committed files come from four different times: `01_tree`; `02_stack` to `06_super`;
-  `07_ic` with `08_fold`, re-measured after two earlier runs had flagged noise; and `09_jit`,
-  re-measured on 2026-10-08 together with the background-compilation pair `jit_sync` and
-  `jit_background` (§5, Engine 4, "Re-measured"). Interleaving
-  (§5, the measurement pipeline) only protects comparisons inside one invocation, so three
-  marginal ratios compare rows from different invocations: `02_stack` against `01_tree`,
-  `07_ic` against `06_super`, and `09_jit` against `08_fold` (also a different day). Every
-  cumulative ratio compares against `01_tree`, which was measured on its own.
-- **Three commits, two sources.** Rows `07_ic` and `08_fold` record commit `0d05a706c5`, row
-  `09_jit` `12d2c10368`, the others `e618db54a8`. `0d05a706c5` is an interim commit of the
-  earlier results files on top of `e618db54a8`; it changes only `README.md` and `results/`, so
-  rows 01 to 08 ran the same source. `12d2c10368` is the background-compilation commit (issue
-  #27): it changes the JIT's source as well (`src/jit/`, the JIT's hooks in `src/vm_reg.cpp`, the
-  atomic `jit_entry`), so row `09_jit` against `08_fold` compares different sources as well as
-  different invocations.
+- Rows `01_tree` through `07_ic` retain their October 7 measurements. `08_fold`, `09_jit`,
+  `jit_sync` and `jit_background` were measured together on October 19 from clean source
+  commit `358efb83c1`. All runs used the Apple M1 Pro on AC power, Low Power Mode off, with
+  10 retained rounds of 20 `run()` calls per process and the initial round discarded.
+- **Four retained sessions.** The groups are `01_tree`; `02_stack` through `06_super`;
+  `07_ic`; and the new register/JIT session. `07_ic` originally shared a session with the
+  previous `08_fold` measurement, which has now been replaced. Marginal ratios crossing
+  sessions are `02_stack` / `01_tree`, `07_ic` / `06_super`, and `08_fold` / `07_ic`.
+  The JIT's comparison against `08_fold` is now interleaved on the same source revision.
+  Every cumulative ratio still compares against the tree-walker from its earlier session.
+- **Source provenance.** Rows `01_tree` through `06_super` record `e618db54a8`; `07_ic`
+  records `0d05a706c5`, a results-only commit with the same source. The four new files record
+  `358efb83c1`, which includes self-recursion. The sections below retain earlier per-rung
+  investigations as historical records. Their older figures can be recovered from Git history;
+  the current generated README tables use the current results files. The final self-recursion
+  entry reports the latest measurements.
 - **Commit IDs predate a history rewrite.** On 2026-10-11 the repository's history was rewritten
   to edit commit messages and a few repository configuration files; no source, test, script,
   benchmark or results file changed. The commit IDs recorded in `results/` and quoted in this file
-  are the IDs from before the rewrite. Old to new: `e618db54a8` is `f7ec06b0e2` (#54),
+  for those older runs are the IDs from before the rewrite; `358efb83c1` is a current-history
+  source commit. Old to new: `e618db54a8` is `f7ec06b0e2` (#54),
   `04e96e6` is `0684fe7829` (#55), `12d2c10368` is `c046c1ca40` (#56), and `b112ded` (the
   results commit merged in #57) is part of `d94a4193af`. `0d05a706c5` was an interim results
   commit on a branch that no longer exists; its source is that of `e618db54a8`.
@@ -2133,18 +2131,39 @@ address initially used the wrong instruction width. Register instructions occupy
 The conversion now has a static assertion, and a regression test performs several additions
 before the failing operation so resuming at an earlier instruction changes the answer.
 
-**Measurement pending:** the implementation has not been benchmarked under D5's conditions.
-The stored JIT results are still from the earlier source revision; their fallback labels are
-preserved using the historical coverage manifest. No speedup for native recursive `fib` is
-claimed. Once the Mac is on AC power, Low Power Mode is off, and the machine is left idle,
-measure the register baseline and JIT configurations together from a clean source commit:
+**Measured (October 19):** `08_fold`, `09_jit`, `jit_sync` and `jit_background` were
+interleaved from clean commit `358efb83c1`, on AC power with Low Power Mode off and the machine
+left idle. The first complete session flagged noise in `09_jit` on `nbody` and `warmup`, so all
+four configurations were repeated together. The committed files contain that complete second
+session, dated `2026-10-19T16:38:56Z`, without mixing samples. Every retained IQR is below 5%;
+the largest is 2.68%. Current coverage is captured in each JIT results file's metadata.
+
+| Workload | Register baseline, ms/call | JIT, ms/call | Register / JIT |
+|---|---:|---:|---:|
+| `fib` | 13.37 | 2.94 | 4.54× |
+| `loop_sum` | 30.22 | 13.37 | 2.26× |
+| `sieve` (VM fallback) | 16.66 | 17.04 | 0.98× |
+| `nbody` (VM fallback) | 33.17 | 33.27 | 1.00× ▼ |
+| `strcat` (VM fallback) | 134.04 | 133.37 | 1.00× |
+| `closures` (VM fallback) | 44.72 | 45.61 | 0.98× |
+
+These are median process totals divided by calls, from `results/08_fold.json` and
+`results/09_jit.json`. `nbody` is slightly slower despite rounding to 1.00×. The native `fib`
+result now measures recursive machine code; the earlier `fib` result measured VM execution.
+Median total compilation cost was 21.19 µs per `fib` process and 16.98 µs for `loop_sum`.
+The wider ladder still has comparisons across sessions, so its apparent folding gain on
+`loop_sum` is not a controlled estimate of folding's effect.
+
+For the background pair, `warmup` p99 fell from 0.890583 ms to 0.279250 ms while p50 stayed
+near 0.088 ms. Main-suite tails did not improve consistently: `loop_sum` p99 changed from
+38.706333 ms to 40.057583 ms. These are the committed `jit_sync` and `jit_background` files,
+measured in the same invocation. The evidence supports a benefit on the synthetic burst of
+compilations, not a general claim of lower tail latency.
+
+To repeat the comparison from a clean checkout under D5's conditions:
 
 ```sh
 python3 scripts/bench.py --configs 08_fold 09_jit jit_sync jit_background
 python3 scripts/ladder.py
 python3 scripts/render_results.py
 ```
-
-Review every noisy flag, update the performance discussion from those results, and complete
-cross-platform CI before merging. The extra baseline makes the new JIT comparison interleaved;
-comparisons with older ladder rows remain comparisons across sessions.
